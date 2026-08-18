@@ -25,13 +25,10 @@ const formatTime = (seconds) => {
     return `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 };
 
-function setStatus(message, state = 'ready') {
-    const status = $('#app-status');
-    if (!status) return;
-    status.querySelector('span:last-child').textContent = message;
-    const dot = status.querySelector('.status-dot');
-    dot.style.background = state === 'error' ? '#ff4d4d' : state === 'busy' ? '#ffb020' : '#40d87a';
+function setStatus() {
+    // The sidebar header intentionally has no persistent status label.
 }
+
 
 function toast(message) {
     const elm = $('#toast');
@@ -256,6 +253,18 @@ $('#play-btn').addEventListener('click', async () => {
 });
 
 $('#loop-btn').addEventListener('click', () => loopController.open());
+
+// Match the reference transport behavior: an active loop always restarts at
+// its selected start if the media element reaches its natural end. Partial
+// loops are normally caught by the controller before this point; this also
+// covers full-track/edge cases consistently.
+audioControl.audioElement.addEventListener('ended', () => {
+    if (loopController.isActive()) {
+        const range = loopController.getExportRange();
+        audioControl.setCurrentTime(range.active ? range.start : 0);
+        audioControl.play().catch(() => {});
+    }
+});
 
 $('#reset-audio').addEventListener('click', () => {
     audioControl.resetPlayback();

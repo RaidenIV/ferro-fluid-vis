@@ -1102,6 +1102,7 @@ const galaxyLoopController = (() => {
       state.loopStart = clamp(state.loopStart, 0, duration);
       state.loopEnd = clamp(state.loopEnd || duration, state.loopStart, duration);
     }
+    updateAudioLoopMode();
     galaxyLoopController.syncButton();
   }
 
@@ -1116,6 +1117,7 @@ const galaxyLoopController = (() => {
     state.loopStart = 0;
     state.loopEnd = duration;
     state.loopReady = state.hasAudio;
+    audio.loop = false;
     updateAudioLoopMode();
     galaxyLoopController.syncButton();
   }
@@ -1143,6 +1145,16 @@ const galaxyLoopController = (() => {
     return { start: 0, end: fullDuration, duration: fullDuration, active: false };
   }
 
+  function isActive() {
+    return Boolean(state.audioLoop && state.loopReady && state.loopEnd > state.loopStart);
+  }
+
+  // The reference transport enforces a selected loop continuously while the
+  // track is playing. Keep the same boundary behavior even if the UI render
+  // loop is temporarily throttled by the browser.
+  audio.addEventListener('timeupdate', enforceLoopRange);
+  audio.addEventListener('seeking', enforceLoopRange);
+
   return {
     open() { syncFromAudio(); galaxyLoopController.open(); },
     close: galaxyLoopController.close,
@@ -1151,6 +1163,7 @@ const galaxyLoopController = (() => {
     enforceLoopRange,
     getExportRange,
     hasPartialLoopSelection,
+    isActive,
     getState() { return { ...state }; },
   };
 }

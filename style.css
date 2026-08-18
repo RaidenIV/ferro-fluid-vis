@@ -113,8 +113,6 @@ button, input, select { font: inherit; }
   margin-bottom: 10px;
 }
 .app-title { font-size: 24px; font-weight: 700; letter-spacing: .5px; line-height: 1.1; }
-.app-status { display: flex; align-items: center; gap: 7px; margin-top: 6px; color: #777; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; }
-.status-dot { width: 6px; height: 6px; border-radius: 50%; background: #40d87a; box-shadow: 0 0 9px rgba(64,216,122,.45); }
 
 .minimize-btn,
 .collapse-toggle,
@@ -345,7 +343,7 @@ progress::-webkit-progress-value { background: var(--accent); }
 progress::-moz-progress-bar { background: var(--accent); }
 .progress-meta { display: flex; justify-content: space-between; color: #888; font-size: 10px; }
 
-.viewport-brand { position: fixed; z-index: 30; top: 18px; right: 20px; pointer-events: none; color: rgba(255,255,255,.78); font-size: 11px; font-weight: 800; letter-spacing: .15em; text-transform: uppercase; }
+.viewport-brand { position: fixed; z-index: 30; top: 18px; right: 142px; pointer-events: none; color: rgba(255,255,255,.78); font-size: 11px; font-weight: 800; letter-spacing: .15em; text-transform: uppercase; }
 .viewport-brand span { color: var(--accent); }
 .interaction-hint { position: fixed; z-index: 30; left: 20px; bottom: 15px; pointer-events: none; color: rgba(255,255,255,.35); font-size: 9px; font-weight: 600; letter-spacing: .04em; }
 .toast { position: fixed; z-index: 5000; left: 50%; bottom: 28px; transform: translate(-50%,12px); opacity: 0; pointer-events: none; padding: 8px 12px; border: 1px solid rgba(255,255,255,.14); border-radius: 7px; background: rgba(8,8,8,.9); color: #e8edf4; font-size: 11px; font-weight: 700; transition: .16s ease; backdrop-filter: blur(10px); }
@@ -355,7 +353,7 @@ progress::-moz-progress-bar { background: var(--accent); }
   #controls { top: 10px; left: 10px; width: calc(100% - 20px); min-width: 0; max-width: 340px; max-height: calc(100vh - 20px); padding: 16px; }
   .app-title { font-size: 18px; }
   .logo-top .logo { width: 58px; max-height: 38px; }
-  .viewport-brand { top: 14px; right: 14px; font-size: 9px; }
+  .viewport-brand { top: 14px; right: 128px; font-size: 9px; }
   .interaction-hint { display: none; }
 }
 
@@ -518,3 +516,23 @@ progress::-moz-progress-bar { background: var(--accent); }
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* Select controls use a dedicated full-width row so native dropdown chrome
+   cannot collapse or clip inside the two-column numeric-control grid. */
+.select-control {
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-areas: "label" "input" "hint" !important;
+}
+.select-control > label { grid-area: label !important; }
+.select-control > select {
+  grid-area: input !important;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  height: 36px;
+  box-sizing: border-box;
+  padding: 8px 34px 8px 10px;
+  line-height: 18px;
+}
+.select-control > .control-hint { grid-area: hint !important; }

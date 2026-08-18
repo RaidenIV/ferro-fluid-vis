@@ -843,10 +843,20 @@ export class Sketch {
         gl.bindVertexArray(this.quadVAO);
         const u = this.heightMapUniforms;
         u.u_particlePosTexture = this.currentPositionTexture;
-        u.u_heightFactor = this.#remapZoomForHeight(this.ZOOM) * (1 + this.#getReactiveLevel() * this.audioReactive.spikeHeight);
+        const reactiveLevel = this.#getReactiveLevel();
+        // The Ferrofluid controls are direct shape controls as well as audio
+        // response amounts. Their defaults evaluate to exactly 1.0 here, so
+        // the existing default appearance is unchanged, while moving either
+        // control now produces an immediate visible result even with audio
+        // paused or Audio Reactive disabled.
+        const heightControl = Math.max(0, Number(this.audioReactive.spikeHeight) || 0);
+        const sharpnessControl = Math.max(0, Number(this.audioReactive.spikeSharpness) || 0);
+        const heightBaseMultiplier = heightControl / 1.35;
+        const sharpnessBaseMultiplier = sharpnessControl / 0.45;
+        u.u_heightFactor = this.#remapZoomForHeight(this.ZOOM) * heightBaseMultiplier * (1 + reactiveLevel * heightControl);
         u.u_scale = this.#remapHeightMapZoomScale(this.ZOOM);
         u.u_smoothFactor = this.#remapSmoothFactorZoom(this.ZOOM);
-        u.u_spikeFactor = this.#remapSpikeFactorZoom(this.ZOOM) * (1 + this.#getReactiveLevel() * this.audioReactive.spikeSharpness);
+        u.u_spikeFactor = this.#remapSpikeFactorZoom(this.ZOOM) * sharpnessBaseMultiplier * (1 + reactiveLevel * sharpnessControl);
         twgl.setUniforms(this.heightMapPrg, u);
         twgl.drawBufferInfo(gl, this.quadBufferInfo);
     }
@@ -985,6 +995,10 @@ export class Sketch {
     }
 
     setAudioReactiveSettings(partial = {}) {
+        const liveFerrofluidKeys = ['spikeHeight', 'spikeSharpness', 'agitation', 'cameraZoom'];
+        if (liveFerrofluidKeys.some((key) => Object.prototype.hasOwnProperty.call(partial, key))) {
+            this.#finishEntryAnimationForLiveControl();
+        }
         Object.assign(this.audioReactive, partial);
     }
 
@@ -1011,7 +1025,21 @@ export class Sketch {
 
     setBaseZoom(value) {
         this.baseZoom = Math.max(0.05, Math.min(0.95, Number(value)));
-        if (this.isEntryAnimationDone) this.ZOOM = this.baseZoom;
+        this.#finishEntryAnimationForLiveControl();
+        this.ZOOM = this.baseZoom;
+    }
+
+    #finishEntryAnimationForLiveControl() {
+        if (this.isEntryAnimationDone) return;
+        this.entryProgress = this.entryDuration + this.entryDelay;
+        this.isEntryAnimationDone = true;
+        this.ZOOM = this.baseZoom;
+        this.lastActivityTime = this.#time;
+        if (this.onEntryAnimationDone) {
+            const callback = this.onEntryAnimationDone;
+            this.onEntryAnimationDone = null;
+            callback();
+        }
     }
 
     setCameraSettings(partial = {}) {
@@ -1157,6 +1185,16 @@ export class Sketch {
     #updateCameraMatrix() {
         mat4.targetTo(this.camera.matrix, this.camera.position, [0, 0, 0], this.camera.up);
         mat4.invert(this.camera.matrices.view, this.camera.matrix);
+        // Keep the complete camera transform coherent whenever yaw changes.
+        // Auto Rotate updates yaw every frame; previously the inverse
+        // view-projection remained stale until a resize/projection change.
+        if (this.camera.matrices.inversProjection) {
+            mat4.multiply(
+                this.camera.matrices.inversViewProjection,
+                this.camera.matrix,
+                this.camera.matrices.inversProjection
+            );
+        }
     }
 
     #updateProjectionMatrix(gl) {
