@@ -39,6 +39,17 @@ button, input, select { font: inherit; }
 }
 #visualizer-canvas.is-camera-dragging { cursor: grabbing; }
 
+#hud-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+#hud-canvas[hidden] { display: none; }
+
 #controls {
   position: fixed;
   top: 20px;
@@ -451,4 +462,37 @@ progress::-moz-progress-bar { background: var(--accent); }
   color: #aaa;
   margin-top: 10px;
   min-height: 16px;
+}
+
+/* Performance telemetry uses the same compact technical card language as export estimates. */
+.performance-readout {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 10px 0 2px;
+}
+.performance-readout > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px 9px;
+  background: rgba(255,255,255,0.035);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 6px;
+}
+.performance-readout span {
+  color: #777;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .35px;
+}
+.performance-readout strong {
+  color: #d6d6d6;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

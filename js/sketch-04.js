@@ -68,6 +68,47 @@ export class Sketch {
     };
     exportResolution = null;
 
+    // Performance controls keep the expensive fluid surface pass independent
+    // from the display/export resolution. Ultra reproduces the original
+    // 256px height-map quality; lower presets reduce only the internal surface
+    // field resolution.
+    performanceSettings = {
+        mode: 'auto',
+        simulationQuality: 'ultra',
+        renderScale: 1,
+        adaptiveSimulation: true,
+        fpsLimit: 60,
+        showStats: false,
+        exportMode: false,
+    };
+    performanceStats = {
+        fps: 60,
+        frameMs: 16.67,
+        simulationMs: 0,
+        renderMs: 0,
+        effectiveQuality: 'ultra',
+        effectiveRenderScale: 1,
+        effectiveSteps: 1,
+        simulationHz: 60,
+        showStats: false,
+    };
+    qualityProfiles = {
+        low: { surfaceScale: 0.50 },
+        medium: { surfaceScale: 0.65 },
+        high: { surfaceScale: 0.80 },
+        ultra: { surfaceScale: 1.00 },
+    };
+    qualityOrder = ['low', 'medium', 'high', 'ultra'];
+    effectiveQuality = 'ultra';
+    effectiveRenderScale = 1;
+    autoQualityIndex = 3;
+    autoRenderScale = 1;
+    lastAutoTuneTime = 0;
+    lastProcessedFrameTime = 0;
+    simulationAccumulator = 0;
+    lastActivityTime = 0;
+    drawingBufferOverride = false;
+
     // resolution of the spikes plane (side segments)
     planeResolution = 128;
 
@@ -124,46 +165,60 @@ export class Sketch {
         this.isDev = isDev;
         this.pane = pane;
         this.audioControl = audioControl;
+        this.boundRun = (time) => this.run(time);
 
         this.#init();
     }
 
     run(time = 0) {
         if (this.envMapTextureLoaded) {
-            this.#deltaTime = Math.min(16, time - this.#time);
+            const fpsLimit = this.performanceSettings.exportMode ? 0 : Number(this.performanceSettings.fpsLimit);
+            const frameInterval = fpsLimit > 0 ? 1000 / fpsLimit : 0;
+            if (frameInterval && this.lastProcessedFrameTime && time - this.lastProcessedFrameTime < frameInterval - 0.75) {
+                requestAnimationFrame(this.boundRun);
+                return;
+            }
+
+            const rawDelta = this.#time ? Math.max(0.1, time - this.#time) : this.TARGET_FRAME_DURATION;
+            this.#deltaTime = Math.min(50, rawDelta);
             this.#time = time;
+            this.lastProcessedFrameTime = time;
             this.#deltaFrames = this.#deltaTime / this.TARGET_FRAME_DURATION;
             this.#frames += this.#deltaFrames;
+            this.#updateFrameStats(rawDelta);
 
             this.#animate(this.#deltaTime);
+            const renderStart = performance.now();
             this.#render();
+            this.performanceStats.renderMs += (performance.now() - renderStart - this.performanceStats.renderMs) * 0.12;
+            this.#autoTunePerformance(time);
         }
 
-        requestAnimationFrame((t) => this.run(t));
+        requestAnimationFrame(this.boundRun);
     }
 
     resize() {
         /** @type {WebGLRenderingContext} */
         const gl = this.gl;
 
-        this.viewportSize = vec2.set(
-            this.viewportSize,
-            this.canvas.clientWidth,
-            this.canvas.clientHeight
-        );
+        const clientWidth = Math.max(1, this.canvas.clientWidth);
+        const clientHeight = Math.max(1, this.canvas.clientHeight);
+        const sizeChanged = this.viewportSize[0] !== clientWidth || this.viewportSize[1] !== clientHeight;
+        if (sizeChanged) vec2.set(this.viewportSize, clientWidth, clientHeight);
 
-        // use a fixed domain scale for this project
-        this.domainScale = vec2.fromValues(8, 8);
-        this.simulationParams.DOMAIN_SCALE = this.domainScale;
-        this.simulationParamsNeedUpdate = true;
-
-        const needsResize = twgl.resizeCanvasToDisplaySize(this.canvas);
-
-        if (needsResize) {
-            gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+        // The SPH domain is fixed and intentionally independent of display size.
+        if (!this.domainScale) this.domainScale = vec2.fromValues(8, 8);
+        if (this.simulationParams.DOMAIN_SCALE !== this.domainScale) {
+            this.simulationParams.DOMAIN_SCALE = this.domainScale;
+            this.simulationParamsNeedUpdate = true;
         }
 
-        this.#updateProjectionMatrix(gl);
+        if (!this.drawingBufferOverride) {
+            const needsResize = twgl.resizeCanvasToDisplaySize(this.canvas, this.effectiveRenderScale);
+            if (needsResize) gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+        }
+
+        if (sizeChanged || !this.camera.aspect) this.#updateProjectionMatrix(gl);
     }
 
     #init() {
@@ -222,6 +277,13 @@ export class Sketch {
         this.heightMapFBO = twgl.createFramebufferInfo(gl, [{attachment: this.textures.heightMap}], this.heightMapSize, this.heightMapSize);
 
         this.#initEvents();
+        this.domainScale = vec2.fromValues(8, 8);
+        this.simulationParams.DOMAIN_SCALE = this.domainScale;
+        this.simulationParamsNeedUpdate = true;
+        this.#initReusableUniforms();
+        this.#updateBackgroundRgb();
+        this.lastActivityTime = performance.now();
+
         this.#syncCameraFromControls();
         this.#updateSimulationParams();
         this.#initTweakpane();
@@ -241,6 +303,10 @@ export class Sketch {
         this.pointerLerpPrev = vec2.create();
         this.pointerLerpDelta = vec2.create();
         this.orbitPointer = vec2.create();
+        this.screenNdc = vec4.create();
+        this.screenWorld = vec4.create();
+        this.pointerRay = vec3.create();
+        this.pointerIntersection = vec3.create();
 
         fromEvent(this.canvas, 'contextmenu').subscribe((e) => e.preventDefault());
         fromEvent(this.canvas, 'pointerdown').subscribe((e) => {
@@ -251,8 +317,8 @@ export class Sketch {
             }
             if (e.button !== 0) return;
             this.isPointerDown = true;
-            this.pointer = this.#getNormalizedPointerCoords(e);
-            this.pointer = this.#getPointerSpikesPlaneIntersection();
+            this.#getNormalizedPointerCoords(e);
+            this.#getPointerSpikesPlaneIntersection();
             vec2.copy(this.pointerLerp, this.pointer);
             vec2.copy(this.pointerLerpPrev, this.pointerLerp);
         });
@@ -271,17 +337,17 @@ export class Sketch {
                 this.orbitPointer[1] = e.clientY;
                 this.cameraControls.yaw += dx * 0.22;
                 this.cameraControls.elevation = Math.max(8, Math.min(72, this.cameraControls.elevation - dy * 0.18));
-                this.#syncCameraFromControls();
+                this.#syncCameraFromControls(true);
                 return;
             }
             if (!this.isPointerDown) return;
-            this.pointer = this.#getNormalizedPointerCoords(e);
-            this.pointer = this.#getPointerSpikesPlaneIntersection();
+            this.#getNormalizedPointerCoords(e);
+            this.#getPointerSpikesPlaneIntersection();
         });
         fromEvent(this.canvas, 'wheel').subscribe((e) => {
             e.preventDefault();
             this.cameraControls.distance = Math.max(0.72, Math.min(2.4, this.cameraControls.distance + e.deltaY * 0.0015));
-            this.#syncCameraFromControls();
+            this.#syncCameraFromControls(true);
         });
     }
 
@@ -299,10 +365,12 @@ export class Sketch {
         const rect = this.canvas.getBoundingClientRect();
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
-        return vec2.fromValues(
+        vec2.set(
+            this.pointer,
             (x / Math.max(1, rect.width)) * 2. - 1,
             (1 - (y / Math.max(1, rect.height))) * 2. - 1
         );
+        return this.pointer;
     }
 
     #initTextures() {
@@ -330,8 +398,9 @@ export class Sketch {
 
          console.log('number of cells:', this.numCells);
 
-         // heightmap size
-         this.heightMapSize = this.planeResolution * 2;
+         // Internal surface resolution is independent of the display buffer.
+         this.baseHeightMapSize = this.planeResolution * 2;
+         this.heightMapSize = this.#getHeightMapSize(this.effectiveQuality);
 
          const initVelocities = new Float32Array(this.NUM_PARTICLES * 4);
          const initForces = new Float32Array(this.NUM_PARTICLES * 4);
@@ -378,6 +447,14 @@ export class Sketch {
              wrap: gl.CLAMP_TO_EDGE
          }
 
+         this.heightMapTextureOptions = {
+             min: isIOS ? gl.NEAREST : gl.LINEAR,
+             mag: isIOS ? gl.NEAREST : gl.LINEAR,
+             wrap: gl.CLAMP_TO_EDGE,
+             format: gl.RED,
+             internalFormat: gl.R32F,
+         };
+
          this.textures = twgl.createTextures(gl, {
              densityPressure: {
                  ...defaultOptions,
@@ -403,19 +480,200 @@ export class Sketch {
                  src: this.initialOffsetTextureData,
              },
              heightMap: {
-                min: isIOS ? gl.NEAREST : gl.LINEAR,
-                mag: isIOS ? gl.NEAREST : gl.LINEAR,
-                wrap: gl.CLAMP_TO_EDGE,
+                ...this.heightMapTextureOptions,
                 width: this.heightMapSize,
                 height: this.heightMapSize,
-                format: gl.RED,
-                internalFormat: gl.R32F,
-                src: new Float32Array(this.heightMapSize * this.heightMapSize)
             },
          });
 
          this.currentPositionTexture = this.textures.position2;
          this.currentVelocityTexture = this.textures.velocity2;
+    }
+
+    #initReusableUniforms() {
+        this.cellTexSize = [this.cellSideCount, this.cellSideCount];
+        this.particleTexSize = [this.textureSize, this.textureSize];
+        this.backgroundRgb = new Float32Array(3);
+        this.pressureUniforms = {
+            u_positionTexture: this.inFBO.attachments[0],
+            u_indicesTexture: this.currentIndicesTexture,
+            u_offsetTexture: this.textures.offset,
+            u_gasConst: this.simulationParams.GAS_CONST,
+        };
+        this.forceUniforms = {
+            u_densityPressureTexture: this.pressureFBO.attachments[0],
+            u_positionTexture: this.inFBO.attachments[0],
+            u_velocityTexture: this.inFBO.attachments[1],
+            u_indicesTexture: this.currentIndicesTexture,
+            u_offsetTexture: this.textures.offset,
+        };
+        this.integrateUniforms = {
+            u_positionTexture: this.inFBO.attachments[0],
+            u_velocityTexture: this.inFBO.attachments[1],
+            u_forceTexture: this.forceFBO.attachments[0],
+            u_densityPressureTexture: this.pressureFBO.attachments[0],
+            u_pointerPos: this.pointerLerp,
+            u_pointerVelocity: this.pointerLerpDelta,
+            u_dt: 16,
+            u_frames: 0,
+            u_zoom: this.ZOOM,
+            u_domainScale: this.domainScale,
+            u_audioLevel: 0,
+            u_audioBass: 0,
+            u_audioMids: 0,
+            u_audioTreble: 0,
+            u_audioAgitation: this.audioReactive.agitation,
+        };
+        this.indicesUniforms = {
+            u_positionTexture: this.currentPositionTexture,
+            u_cellTexSize: this.cellTexSize,
+            u_cellSize: this.simulationParams.H,
+            u_domainScale: this.domainScale,
+        };
+        this.sortUniforms = {
+            u_indicesTexture: this.indices1FBO.attachments[0],
+            u_twoStage: 0,
+            u_passModStage: 0,
+            u_twoStagePmS1: 0,
+            u_texSize: this.particleTexSize,
+            u_ppass: 0,
+        };
+        this.offsetUniforms = {
+            u_indicesTexture: this.indices1FBO.attachments[0],
+            u_texSize: this.cellTexSize,
+            u_particleTexSize: this.particleTexSize,
+        };
+        this.heightMapUniforms = {
+            u_particlePosTexture: this.currentPositionTexture,
+            u_heightFactor: 0,
+            u_scale: 0,
+            u_smoothFactor: 0,
+            u_spikeFactor: 0,
+        };
+        this.groundUniforms = {
+            u_worldMatrix: this.groundWorldMatrix,
+            u_viewMatrix: this.camera.matrices.view,
+            u_projectionMatrix: this.camera.matrices.projection,
+            u_cameraPosition: this.camera.position,
+            u_envMapTexture: this.envMapTexture,
+            u_zoom: this.ZOOM,
+            u_backgroundColor: this.backgroundRgb,
+            u_materialBrightness: this.appearance.materialBrightness,
+            u_iridescence: this.appearance.iridescence,
+        };
+        this.spikesUniforms = {
+            u_worldMatrix: this.spikesWorldMatrix,
+            u_viewMatrix: this.camera.matrices.view,
+            u_projectionMatrix: this.camera.matrices.projection,
+            u_heightMapTexture: this.textures.heightMap,
+            u_zoom: this.ZOOM,
+            u_cameraPosition: this.camera.position,
+            u_envMapTexture: this.envMapTexture,
+            u_materialBrightness: this.appearance.materialBrightness,
+            u_iridescence: this.appearance.iridescence,
+        };
+        this.pointerBlockValues = {
+            pointerRadius: this.pointerParams.RADIUS,
+            pointerStrength: this.pointerParams.STRENGTH,
+            pointerPos: this.pointerLerp,
+            pointerVelocity: this.pointerLerpDelta,
+        };
+    }
+
+    #getHeightMapSize(quality = this.effectiveQuality) {
+        const profile = this.qualityProfiles[quality] || this.qualityProfiles.ultra;
+        const base = this.baseHeightMapSize || this.planeResolution * 2;
+        return Math.max(64, Math.round((base * profile.surfaceScale) / 16) * 16);
+    }
+
+    #rebuildHeightMap(quality) {
+        if (!this.gl || !this.textures || !this.heightMapTextureOptions) return;
+        const nextSize = this.#getHeightMapSize(quality);
+        if (nextSize === this.heightMapSize) return;
+        const gl = this.gl;
+        if (this.heightMapFBO?.framebuffer) gl.deleteFramebuffer(this.heightMapFBO.framebuffer);
+        if (this.textures.heightMap) gl.deleteTexture(this.textures.heightMap);
+        this.heightMapSize = nextSize;
+        this.textures.heightMap = twgl.createTexture(gl, {
+            ...this.heightMapTextureOptions,
+            width: nextSize,
+            height: nextSize,
+        });
+        this.heightMapFBO = twgl.createFramebufferInfo(gl, [{ attachment: this.textures.heightMap }], nextSize, nextSize);
+        if (this.spikesUniforms) this.spikesUniforms.u_heightMapTexture = this.textures.heightMap;
+    }
+
+    #updateBackgroundRgb() {
+        if (!this.backgroundRgb) return;
+        const clean = String(this.appearance.backgroundColor || '#000000').replace('#', '');
+        const value = clean.length === 3 ? clean.split('').map((c) => c + c).join('') : clean.padEnd(6, '0').slice(0, 6);
+        this.backgroundRgb[0] = parseInt(value.slice(0, 2), 16) / 255;
+        this.backgroundRgb[1] = parseInt(value.slice(2, 4), 16) / 255;
+        this.backgroundRgb[2] = parseInt(value.slice(4, 6), 16) / 255;
+    }
+
+    #updateFrameStats(rawDelta) {
+        const fps = 1000 / Math.max(0.1, rawDelta);
+        this.performanceStats.fps += (fps - this.performanceStats.fps) * 0.08;
+        this.performanceStats.frameMs += (rawDelta - this.performanceStats.frameMs) * 0.08;
+    }
+
+    #applyEffectivePerformanceState(quality, renderScale) {
+        const normalizedQuality = this.qualityProfiles[quality] ? quality : 'ultra';
+        const normalizedScale = Math.max(0.5, Math.min(1, Number(renderScale) || 1));
+        const qualityChanged = normalizedQuality !== this.effectiveQuality;
+        const scaleChanged = Math.abs(normalizedScale - this.effectiveRenderScale) > 0.001;
+        this.effectiveQuality = normalizedQuality;
+        this.effectiveRenderScale = normalizedScale;
+        this.performanceStats.effectiveQuality = normalizedQuality;
+        this.performanceStats.effectiveRenderScale = normalizedScale;
+        if (qualityChanged) this.#rebuildHeightMap(normalizedQuality);
+        if (scaleChanged && !this.drawingBufferOverride) this.resize();
+    }
+
+    #autoTunePerformance(time) {
+        if (this.performanceSettings.mode !== 'auto' || this.performanceSettings.exportMode || !this.isEntryAnimationDone) return;
+        if (time - this.lastAutoTuneTime < 1500) return;
+        this.lastAutoTuneTime = time;
+
+        const ceiling = Math.max(0, this.qualityOrder.indexOf(this.performanceSettings.simulationQuality));
+        this.autoQualityIndex = Math.min(this.autoQualityIndex, ceiling);
+        const requestedScale = this.performanceSettings.renderScale;
+        const fps = this.performanceStats.fps;
+        const configuredLimit = Number(this.performanceSettings.fpsLimit);
+        const targetFps = configuredLimit > 0 ? configuredLimit : 60;
+        const lowThreshold = targetFps * 0.87;
+        const highThreshold = targetFps * 0.97;
+        if (typeof document !== 'undefined' && document.hidden) return;
+
+        // Protect simulation fidelity first: lower the internal surface field
+        // before reducing display resolution. Restore display resolution first.
+        if (fps < lowThreshold) {
+            if (this.autoQualityIndex > 0) this.autoQualityIndex--;
+            else this.autoRenderScale = Math.max(0.5, Math.round((this.autoRenderScale - 0.1) * 10) / 10);
+        } else if (fps > highThreshold) {
+            if (this.autoRenderScale < requestedScale - 0.01) {
+                this.autoRenderScale = Math.min(requestedScale, Math.round((this.autoRenderScale + 0.1) * 10) / 10);
+            } else if (this.autoQualityIndex < ceiling) {
+                this.autoQualityIndex++;
+            }
+        }
+
+        this.#applyEffectivePerformanceState(this.qualityOrder[this.autoQualityIndex], Math.min(requestedScale, this.autoRenderScale));
+    }
+
+    #getAdaptiveStepCount() {
+        const requestedAdditional = Math.max(0, Math.round(this.simulationParams.STEPS));
+        if (!this.performanceSettings.adaptiveSimulation || this.performanceSettings.exportMode || !this.isEntryAnimationDone) return requestedAdditional;
+        const qualityFactor = { low: 0.25, medium: 0.5, high: 0.75, ultra: 1 }[this.effectiveQuality] || 1;
+        const maxAdditional = Math.ceil(requestedAdditional * qualityFactor);
+        const pointerEnergy = Math.min(1, vec2.squaredLength(this.pointerLerpDelta) * 18);
+        const audioEnergy = this.audioReactive.enabled ? (this.audioLevels.overall || 0) : 0;
+        const activity = Math.max(audioEnergy, this.isPointerDown ? 1 : 0, pointerEnergy);
+        if (activity > 0.55) return maxAdditional;
+        if (activity > 0.22) return Math.ceil(maxAdditional * 0.75);
+        if (activity > 0.06) return Math.ceil(maxAdditional * 0.5);
+        return 0;
     }
 
     #initEnvMap() {
@@ -465,17 +723,11 @@ export class Sketch {
         this.#prepare();
 
         if (this.simulationParamsNeedUpdate) {
-            twgl.setBlockUniforms(
-                this.simulationParamsUBO,
-                {
-                    ...this.simulationParams,
-                    CELL_TEX_SIZE: [this.cellSideCount, this.cellSideCount],
-                    CELL_SIZE: this.simulationParams.H
-                }
-            );
-            // The simulation block is declared by both the pressure and force
-            // programs. Bind the same updated UBO to each program so Mass,
-            // Rest Density, Gas Constant, and Viscosity change the live solver.
+            twgl.setBlockUniforms(this.simulationParamsUBO, {
+                ...this.simulationParams,
+                CELL_TEX_SIZE: this.cellTexSize,
+                CELL_SIZE: this.simulationParams.H
+            });
             twgl.setUniformBlock(gl, this.pressurePrg, this.simulationParamsUBO);
             twgl.setUniformBlock(gl, this.forcePrg, this.simulationParamsUBO);
             this.simulationParamsNeedUpdate = false;
@@ -484,76 +736,50 @@ export class Sketch {
             twgl.bindUniformBlock(gl, this.forcePrg, this.simulationParamsUBO);
         }
 
-
-        // calculate density and pressure for every particle
         gl.useProgram(this.pressurePrg.program);
         twgl.bindFramebufferInfo(gl, this.pressureFBO);
         gl.bindVertexArray(this.quadVAO);
-        twgl.setUniforms(this.pressurePrg, {
-            u_positionTexture: this.inFBO.attachments[0],
-            u_indicesTexture: this.currentIndicesTexture,
-            u_offsetTexture: this.textures.offset,
-            // Gas constant is supplied directly to the pressure shader instead
-            // of relying on the shared std140 block. This keeps the control
-            // responsive across browsers/drivers while leaving the rest of the
-            // simulation parameter block unchanged.
-            u_gasConst: this.simulationParams.GAS_CONST,
-        });
+        this.pressureUniforms.u_positionTexture = this.inFBO.attachments[0];
+        this.pressureUniforms.u_indicesTexture = this.currentIndicesTexture;
+        this.pressureUniforms.u_gasConst = this.simulationParams.GAS_CONST;
+        twgl.setUniforms(this.pressurePrg, this.pressureUniforms);
         twgl.drawBufferInfo(gl, this.quadBufferInfo);
 
-
-        // calculate pressure-, viscosity- and boundary forces for every particle
         gl.useProgram(this.forcePrg.program);
         twgl.bindFramebufferInfo(gl, this.forceFBO);
-        twgl.setUniforms(this.forcePrg, {
-            u_densityPressureTexture: this.pressureFBO.attachments[0],
-            u_positionTexture: this.inFBO.attachments[0],
-            u_velocityTexture: this.inFBO.attachments[1],
-            u_indicesTexture: this.currentIndicesTexture,
-            u_offsetTexture: this.textures.offset,
-            u_cellTexSize: [this.cellSideCount, this.cellSideCount],
-            u_cellSize: this.simulationParams.H,
-        });
+        this.forceUniforms.u_densityPressureTexture = this.pressureFBO.attachments[0];
+        this.forceUniforms.u_positionTexture = this.inFBO.attachments[0];
+        this.forceUniforms.u_velocityTexture = this.inFBO.attachments[1];
+        this.forceUniforms.u_indicesTexture = this.currentIndicesTexture;
+        twgl.setUniforms(this.forcePrg, this.forceUniforms);
         twgl.drawBufferInfo(gl, this.quadBufferInfo);
 
-        // perform the integration to update the particles position and velocity
         gl.useProgram(this.integratePrg.program);
         twgl.bindFramebufferInfo(gl, this.outFBO);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-        twgl.setUniforms(this.integratePrg, {
-            u_positionTexture: this.inFBO.attachments[0],
-            u_velocityTexture: this.inFBO.attachments[1],
-            u_forceTexture: this.forceFBO.attachments[0],
-            u_densityPressureTexture: this.pressureFBO.attachments[0],
-            u_pointerPos: this.pointerLerp,
-            u_pointerVelocity: this.pointerLerpDelta,
-            u_dt: deltaTime,
-            u_frames: this.#frames,
-            u_zoom: this.ZOOM,
-            u_domainScale: this.domainScale,
-            u_audioLevel: this.audioReactive.enabled ? this.audioLevels.overall : 0,
-            u_audioBass: this.audioReactive.enabled ? this.audioLevels.bass : 0,
-            u_audioMids: this.audioReactive.enabled ? this.audioLevels.mids : 0,
-            u_audioTreble: this.audioReactive.enabled ? this.audioLevels.treble : 0,
-            u_audioAgitation: this.audioReactive.agitation
-        });
-        twgl.setBlockUniforms(
-            this.pointerParamsUBO,
-            {
-                pointerRadius: this.pointerParams.RADIUS,
-                pointerStrength: this.pointerParams.STRENGTH,
-                pointerPos: this.pointerLerp,
-                pointerVelocity: this.pointerLerpDelta
-            }
-        );
+        const u = this.integrateUniforms;
+        u.u_positionTexture = this.inFBO.attachments[0];
+        u.u_velocityTexture = this.inFBO.attachments[1];
+        u.u_forceTexture = this.forceFBO.attachments[0];
+        u.u_densityPressureTexture = this.pressureFBO.attachments[0];
+        u.u_dt = deltaTime;
+        u.u_frames = this.#frames;
+        u.u_zoom = this.ZOOM;
+        u.u_audioLevel = this.audioReactive.enabled ? this.audioLevels.overall : 0;
+        u.u_audioBass = this.audioReactive.enabled ? this.audioLevels.bass : 0;
+        u.u_audioMids = this.audioReactive.enabled ? this.audioLevels.mids : 0;
+        u.u_audioTreble = this.audioReactive.enabled ? this.audioLevels.treble : 0;
+        u.u_audioAgitation = this.audioReactive.agitation;
+        twgl.setUniforms(this.integratePrg, u);
+
+        this.pointerBlockValues.pointerRadius = this.pointerParams.RADIUS;
+        this.pointerBlockValues.pointerStrength = this.pointerParams.STRENGTH;
+        twgl.setBlockUniforms(this.pointerParamsUBO, this.pointerBlockValues);
         twgl.setUniformBlock(gl, this.integratePrg, this.pointerParamsUBO);
         twgl.drawBufferInfo(gl, this.quadBufferInfo);
 
-        // update the current result textures
         this.currentPositionTexture = this.outFBO.attachments[0];
         this.currentVelocityTexture = this.outFBO.attachments[1];
-
-        // swap the integrate FBOs
         const tmp = this.inFBO;
         this.inFBO = this.outFBO;
         this.outFBO = tmp;
@@ -563,90 +789,67 @@ export class Sketch {
         /** @type {WebGLRenderingContext} */
         const gl = this.gl;
 
-        // update the indices structure
         gl.useProgram(this.indicesPrg.program);
         twgl.bindFramebufferInfo(gl, this.indices1FBO);
         gl.bindVertexArray(this.quadVAO);
-        twgl.setUniforms(this.indicesPrg, {
-            u_positionTexture: this.currentPositionTexture,
-            u_cellTexSize: [this.cellSideCount, this.cellSideCount],
-            u_cellSize: this.simulationParams.H,
-            u_domainScale: this.domainScale,
-        });
+        this.indicesUniforms.u_positionTexture = this.currentPositionTexture;
+        twgl.setUniforms(this.indicesPrg, this.indicesUniforms);
         twgl.drawBufferInfo(gl, this.quadBufferInfo);
 
-        // sort by cell id
         let sortOutFBO = this.indices1FBO;
         let sortInFBO = this.indices2FBO;
         gl.useProgram(this.sortPrg.program);
-
-        // odd-even merge sort
         let pass = -1;
         let stage = -1;
         let stepsLeft = this.totalSortSteps;
-        while(stepsLeft) {
-            // update pass and stage uniforms
+        const u = this.sortUniforms;
+        while (stepsLeft) {
             pass--;
             if (pass < 0) {
-                // next stage
                 stage++;
                 pass = stage;
             }
-
             const pstage = (1 << stage);
-            const ppass  = (1 << pass);
-
+            const ppass = (1 << pass);
             twgl.bindFramebufferInfo(gl, sortInFBO);
-            twgl.setUniforms(this.sortPrg, {
-                u_indicesTexture: sortOutFBO.attachments[0],
-                u_twoStage: pstage + pstage,
-                u_passModStage: ppass % pstage,
-                u_twoStagePmS1: (pstage + pstage) - (ppass % pstage) - 1,
-                u_texSize: [this.textureSize, this.textureSize],
-                u_ppass: ppass
-            });
+            u.u_indicesTexture = sortOutFBO.attachments[0];
+            u.u_twoStage = pstage + pstage;
+            u.u_passModStage = ppass % pstage;
+            u.u_twoStagePmS1 = (pstage + pstage) - (ppass % pstage) - 1;
+            u.u_ppass = ppass;
+            twgl.setUniforms(this.sortPrg, u);
             twgl.drawBufferInfo(gl, this.quadBufferInfo);
-
-            // buffer swap
             const tmp = sortOutFBO;
             sortOutFBO = sortInFBO;
             sortInFBO = tmp;
-
             stepsLeft--;
         }
 
-        // set the offset list elements
         gl.useProgram(this.offsetPrg.program);
         twgl.bindFramebufferInfo(gl, this.offsetFBO);
-        twgl.setUniforms(this.offsetPrg, {
-            u_indicesTexture: sortOutFBO.attachments[0],
-            u_texSize: [this.cellSideCount, this.cellSideCount],
-            u_particleTexSize: [this.textureSize, this.textureSize],
-        });
+        this.offsetUniforms.u_indicesTexture = sortOutFBO.attachments[0];
+        twgl.setUniforms(this.offsetPrg, this.offsetUniforms);
         gl.clearColor(1, 0, 0, 0);
         twgl.drawBufferInfo(gl, this.quadBufferInfo);
-
         this.currentIndicesTexture = sortOutFBO.attachments[0];
     }
 
     #renderHeightMap() {
         /** @type {WebGLRenderingContext} */
         const gl = this.gl;
-
-        // draw height map
         gl.useProgram(this.heightMapPrg.program);
         twgl.bindFramebufferInfo(gl, this.heightMapFBO);
         gl.disable(gl.CULL_FACE);
         gl.disable(gl.DEPTH_TEST);
         gl.disable(gl.BLEND);
         gl.bindVertexArray(this.quadVAO);
-        twgl.setUniforms(this.heightMapPrg, {
-            u_particlePosTexture: this.currentPositionTexture,
-            u_heightFactor: this.#remapZoomForHeight(this.ZOOM) * (1 + this.#getReactiveLevel() * this.audioReactive.spikeHeight),
-            u_scale: this.#remapHeightMapZoomScale(this.ZOOM),
-            u_smoothFactor: this.#remapSmoothFactorZoom(this.ZOOM),
-            u_spikeFactor: this.#remapSpikeFactorZoom(this.ZOOM) * (1 + this.#getReactiveLevel() * this.audioReactive.spikeSharpness)
-        });
+        const u = this.heightMapUniforms;
+        u.u_particlePosTexture = this.currentPositionTexture;
+        u.u_heightFactor = this.#remapZoomForHeight(this.ZOOM) * (1 + this.#getReactiveLevel() * this.audioReactive.spikeHeight);
+        u.u_scale = this.#remapHeightMapZoomScale(this.ZOOM);
+        u.u_smoothFactor = this.#remapSmoothFactorZoom(this.ZOOM);
+        u.u_spikeFactor = this.#remapSpikeFactorZoom(this.ZOOM) * (1 + this.#getReactiveLevel() * this.audioReactive.spikeSharpness);
+        twgl.setUniforms(this.heightMapPrg, u);
         twgl.drawBufferInfo(gl, this.quadBufferInfo);
     }
 
@@ -683,6 +886,7 @@ export class Sketch {
                 if (this.onEntryAnimationDone) this.onEntryAnimationDone();
                 this.isEntryAnimationDone = true;
                 this.ZOOM = this.baseZoom;
+                this.lastActivityTime = this.#time;
             }
         }
 
@@ -693,29 +897,40 @@ export class Sketch {
             if (Number.isFinite(speed) && speed !== 0) {
                 this.cameraControls.yaw += speed * (deltaTime / 1000);
                 this.cameraControls.yaw = ((this.cameraControls.yaw + 180) % 360 + 360) % 360 - 180;
-                this.#syncCameraFromControls();
+                this.#syncCameraFromControls(false);
             }
         }
 
 
 
-        // use a fixed deltaTime of 10 ms adapted to
-        // device frame rate
-        deltaTime = 16 * this.#deltaFrames;
+        const audioActivity = this.audioReactive.enabled ? (this.audioLevels.overall || 0) : 0;
+        const pointerActivity = this.isPointerDown || vec2.squaredLength(this.pointerLerpDelta) > 0.000004;
+        if (audioActivity > 0.02 || pointerActivity) this.lastActivityTime = this.#time;
 
-        // simulate at least once
-        this.#simulate(deltaTime);
+        const adaptive = this.performanceSettings.adaptiveSimulation && !this.performanceSettings.exportMode && this.isEntryAnimationDone;
+        const idle = adaptive && (this.#time - this.lastActivityTime > 1500) && !this.audioControl.isPlaying && !pointerActivity;
+        const simulationInterval = idle ? (1000 / 15) : 0;
+        this.simulationAccumulator += deltaTime;
+        const shouldSimulate = !simulationInterval || this.simulationAccumulator >= simulationInterval;
 
-        // clear the pointer force so that it wont add up during
-        // subsequent simulation steps
-        vec2.set(this.pointerLerpDelta, 0, 0);
-
-        // additional simulation steps
-        for(let i=0; i<this.simulationParams.STEPS; ++i) {
-            this.#simulate(deltaTime);
+        if (shouldSimulate) {
+            const simulationStart = performance.now();
+            const stableDelta = Math.min(20, Math.max(4, 16 * this.#deltaFrames));
+            this.#simulate(stableDelta);
+            vec2.set(this.pointerLerpDelta, 0, 0);
+            const additionalSteps = this.#getAdaptiveStepCount();
+            for (let i = 0; i < additionalSteps; ++i) this.#simulate(stableDelta);
+            this.#renderHeightMap();
+            const simulationMs = performance.now() - simulationStart;
+            this.performanceStats.simulationMs += (simulationMs - this.performanceStats.simulationMs) * 0.12;
+            this.performanceStats.effectiveSteps = 1 + additionalSteps;
+            this.performanceStats.simulationHz = idle ? 15 : Math.min(240, 1000 / Math.max(1, deltaTime));
+            this.simulationAccumulator = 0;
+        } else {
+            this.performanceStats.simulationHz = 15;
+            this.performanceStats.effectiveSteps = 0;
+            this.performanceStats.simulationMs *= 0.96;
         }
-
-        this.#renderHeightMap();
     }
 
     #render() {
@@ -726,21 +941,14 @@ export class Sketch {
         twgl.bindFramebufferInfo(gl, null);
         gl.disable(gl.DEPTH_TEST);
         gl.enable(gl.CULL_FACE);
-        const bg = this.#hexToRgb(this.appearance.backgroundColor);
+        const bg = this.backgroundRgb;
         gl.clearColor(bg[0], bg[1], bg[2], 1.);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         gl.useProgram(this.groundPrg.program);
-        twgl.setUniforms(this.groundPrg, {
-            u_worldMatrix: this.groundWorldMatrix,
-            u_viewMatrix: this.camera.matrices.view,
-            u_projectionMatrix: this.camera.matrices.projection,
-            u_cameraPosition: this.camera.position,
-            u_envMapTexture: this.envMapTexture,
-            u_zoom: this.ZOOM,
-            u_backgroundColor: bg,
-            u_materialBrightness: this.appearance.materialBrightness,
-            u_iridescence: this.appearance.iridescence
-        });
+        this.groundUniforms.u_zoom = this.ZOOM;
+        this.groundUniforms.u_materialBrightness = this.appearance.materialBrightness;
+        this.groundUniforms.u_iridescence = this.appearance.iridescence;
+        twgl.setUniforms(this.groundPrg, this.groundUniforms);
         gl.bindVertexArray(this.groundVAO);
         gl.drawElements(gl.TRIANGLES, this.groundBufferInfo.numElements, gl.UNSIGNED_SHORT, 0);
 
@@ -748,17 +956,11 @@ export class Sketch {
         // draw spikes
         gl.useProgram(this.spikesPrg.program);
         gl.enable(gl.DEPTH_TEST);
-        twgl.setUniforms(this.spikesPrg, {
-            u_worldMatrix: this.spikesWorldMatrix,
-            u_viewMatrix: this.camera.matrices.view,
-            u_projectionMatrix: this.camera.matrices.projection,
-            u_heightMapTexture: this.textures.heightMap,
-            u_zoom: this.ZOOM,
-            u_cameraPosition: this.camera.position,
-            u_envMapTexture: this.envMapTexture,
-            u_materialBrightness: this.appearance.materialBrightness,
-            u_iridescence: this.appearance.iridescence
-        });
+        this.spikesUniforms.u_zoom = this.ZOOM;
+        this.spikesUniforms.u_heightMapTexture = this.textures.heightMap;
+        this.spikesUniforms.u_materialBrightness = this.appearance.materialBrightness;
+        this.spikesUniforms.u_iridescence = this.appearance.iridescence;
+        twgl.setUniforms(this.spikesPrg, this.spikesUniforms);
         gl.bindVertexArray(this.spikesVAO);
         gl.drawElements(gl.TRIANGLES, this.spikesBufferInfo.numElements, gl.UNSIGNED_SHORT, 0);
 
@@ -818,6 +1020,7 @@ export class Sketch {
 
     setAppearanceSettings(partial = {}) {
         Object.assign(this.appearance, partial);
+        if ('backgroundColor' in partial) this.#updateBackgroundRgb();
     }
 
     setBaseZoom(value) {
@@ -826,6 +1029,7 @@ export class Sketch {
     }
 
     setCameraSettings(partial = {}) {
+        const projectionDirty = 'elevation' in partial || 'distance' in partial;
         if ('autoRotate' in partial) this.cameraControls.autoRotate = Boolean(partial.autoRotate);
         if ('yaw' in partial && Number.isFinite(Number(partial.yaw))) this.cameraControls.yaw = Number(partial.yaw);
         if ('elevation' in partial && Number.isFinite(Number(partial.elevation))) this.cameraControls.elevation = Number(partial.elevation);
@@ -833,7 +1037,7 @@ export class Sketch {
         if ('rotateSpeed' in partial && Number.isFinite(Number(partial.rotateSpeed))) this.cameraControls.rotateSpeed = Number(partial.rotateSpeed);
         this.cameraControls.elevation = Math.max(8, Math.min(72, Number(this.cameraControls.elevation)));
         this.cameraControls.distance = Math.max(0.72, Math.min(2.4, Number(this.cameraControls.distance)));
-        this.#syncCameraFromControls();
+        this.#syncCameraFromControls(projectionDirty);
     }
 
     resetCamera() {
@@ -848,6 +1052,7 @@ export class Sketch {
 
     setDrawingBufferSize(width, height) {
         const gl = this.gl;
+        this.drawingBufferOverride = true;
         this.canvas.width = Math.max(1, Math.round(width));
         this.canvas.height = Math.max(1, Math.round(height));
         gl.viewport(0, 0, this.canvas.width, this.canvas.height);
@@ -855,10 +1060,48 @@ export class Sketch {
     }
 
     restoreDisplayResolution() {
-        const gl = this.gl;
-        twgl.resizeCanvasToDisplaySize(this.canvas);
-        gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
-        this.#updateProjectionMatrix(gl);
+        this.drawingBufferOverride = false;
+        this.resize();
+        this.#updateProjectionMatrix(this.gl);
+    }
+
+    setPerformanceSettings(partial = {}) {
+        if ('mode' in partial && ['auto', 'manual'].includes(partial.mode)) this.performanceSettings.mode = partial.mode;
+        if ('simulationQuality' in partial && this.qualityProfiles[partial.simulationQuality]) this.performanceSettings.simulationQuality = partial.simulationQuality;
+        if ('renderScale' in partial) this.performanceSettings.renderScale = Math.max(0.5, Math.min(1, Number(partial.renderScale) || 1));
+        if ('adaptiveSimulation' in partial) this.performanceSettings.adaptiveSimulation = Boolean(partial.adaptiveSimulation);
+        if ('fpsLimit' in partial) {
+            const fps = Number(partial.fpsLimit);
+            this.performanceSettings.fpsLimit = [0, 30, 60, 120].includes(fps) ? fps : 60;
+        }
+        if ('showStats' in partial) this.performanceSettings.showStats = Boolean(partial.showStats);
+
+        const ceiling = Math.max(0, this.qualityOrder.indexOf(this.performanceSettings.simulationQuality));
+        if (this.performanceSettings.mode === 'manual') {
+            this.autoQualityIndex = ceiling;
+            this.autoRenderScale = this.performanceSettings.renderScale;
+            this.#applyEffectivePerformanceState(this.performanceSettings.simulationQuality, this.performanceSettings.renderScale);
+        } else {
+            this.autoQualityIndex = Math.min(this.autoQualityIndex, ceiling);
+            this.autoRenderScale = Math.min(this.autoRenderScale, this.performanceSettings.renderScale);
+            this.#applyEffectivePerformanceState(this.qualityOrder[this.autoQualityIndex], this.autoRenderScale);
+        }
+        this.performanceStats.showStats = this.performanceSettings.showStats;
+    }
+
+    setExportMode(enabled) {
+        this.performanceSettings.exportMode = Boolean(enabled);
+        if (enabled) {
+            // Export dimensions are explicit, so preview render scale is bypassed.
+            this.#applyEffectivePerformanceState(this.performanceSettings.simulationQuality, 1);
+        } else {
+            this.setPerformanceSettings({});
+        }
+    }
+
+    getPerformanceStats() {
+        this.performanceStats.showStats = this.performanceSettings.showStats;
+        return this.performanceStats;
     }
 
     getSerializableState() {
@@ -875,6 +1118,14 @@ export class Sketch {
             camera: { ...this.cameraControls },
             appearance: { ...this.appearance },
             baseZoom: this.baseZoom,
+            performance: {
+                mode: this.performanceSettings.mode,
+                simulationQuality: this.performanceSettings.simulationQuality,
+                renderScale: this.performanceSettings.renderScale,
+                adaptiveSimulation: this.performanceSettings.adaptiveSimulation,
+                fpsLimit: this.performanceSettings.fpsLimit,
+                showStats: this.performanceSettings.showStats,
+            },
         };
     }
 
@@ -883,7 +1134,7 @@ export class Sketch {
         return this.audioLevels[this.audioReactive.band] ?? this.audioLevels.overall ?? 0;
     }
 
-    #syncCameraFromControls() {
+    #syncCameraFromControls(updateProjection = true) {
         const yaw = this.cameraControls.yaw * Math.PI / 180;
         const elevation = this.cameraControls.elevation * Math.PI / 180;
         const distance = this.cameraControls.distance;
@@ -895,20 +1146,9 @@ export class Sketch {
             Math.cos(yaw) * horizontal
         );
         this.#updateCameraMatrix();
-        if (this.gl) this.#updateProjectionMatrix(this.gl);
+        if (updateProjection && this.gl) this.#updateProjectionMatrix(this.gl);
     }
 
-    #hexToRgb(hex) {
-        const clean = String(hex).replace('#', '');
-        const value = clean.length === 3
-            ? clean.split('').map((c) => c + c).join('')
-            : clean.padEnd(6, '0').slice(0, 6);
-        return [
-            parseInt(value.slice(0, 2), 16) / 255,
-            parseInt(value.slice(2, 4), 16) / 255,
-            parseInt(value.slice(4, 6), 16) / 255,
-        ];
-    }
 
     #updateCameraMatrix() {
         mat4.targetTo(this.camera.matrix, this.camera.position, [0, 0, 0], this.camera.up);
@@ -941,23 +1181,26 @@ export class Sketch {
 
     #getPointerSpikesPlaneIntersection() {
         const p = this.#screenToWorldPosition(this.pointer[0], this.pointer[1], 0);
-        const ray = vec3.subtract(vec3.create(), p, this.camera.position);
-        const t = - this.camera.position[1] / ray[1];
-        vec3.scale(ray, ray, t);
-        const i = vec3.add(vec3.create(), this.camera.position, ray);
-        vec3.scale(i, i, 1 / (this.ZOOM + this.#remapHeightMapZoomScale(this.ZOOM)));
-        // swap z with y to match simulation plane
-        return vec3.fromValues(i[0], i[2], 0);
+        vec3.set(
+            this.pointerRay,
+            p[0] - this.camera.position[0],
+            p[1] - this.camera.position[1],
+            p[2] - this.camera.position[2]
+        );
+        const denominator = Math.abs(this.pointerRay[1]) < 0.000001 ? 0.000001 : this.pointerRay[1];
+        const t = -this.camera.position[1] / denominator;
+        vec3.scale(this.pointerRay, this.pointerRay, t);
+        vec3.add(this.pointerIntersection, this.camera.position, this.pointerRay);
+        const scale = 1 / (this.ZOOM + this.#remapHeightMapZoomScale(this.ZOOM));
+        vec2.set(this.pointer, this.pointerIntersection[0] * scale, this.pointerIntersection[2] * scale);
+        return this.pointer;
     }
 
     #screenToWorldPosition(x, y, z) {
-        const ndcPos = vec3.fromValues(x, y, z);
-        const worldPos = vec4.transformMat4(vec4.create(), vec4.fromValues(ndcPos[0], ndcPos[1], ndcPos[2], 1), this.camera.matrices.inversViewProjection);
-        if (worldPos[3] !== 0){
-            vec4.scale(worldPos, worldPos, 1 / worldPos[3]);
-        }
-
-        return worldPos;
+        vec4.set(this.screenNdc, x, y, z, 1);
+        vec4.transformMat4(this.screenWorld, this.screenNdc, this.camera.matrices.inversViewProjection);
+        if (this.screenWorld[3] !== 0) vec4.scale(this.screenWorld, this.screenWorld, 1 / this.screenWorld[3]);
+        return this.screenWorld;
     }
 
     #remapZoomForHeight(zoom) {

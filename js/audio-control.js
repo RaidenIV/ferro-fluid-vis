@@ -21,6 +21,10 @@ export class AudioControl {
         this.smoothing = 0.72;
         this.threshold = 0.025;
         this.smoothed = { overall: 0, bass: 0, mids: 0, treble: 0 };
+        // Reused analysis frame and precomputed FFT band ranges avoid per-frame
+        // object/function allocation in the render loop.
+        this.analysisFrame = { overall: 0, bass: 0, mids: 0, treble: 0 };
+        this.bandRanges = { overall: [0, 0], bass: [0, 0], mids: [0, 0], treble: [0, 0] };
         this.monitorVolume = 0.85;
         this.monitorMuted = false;
 
@@ -82,6 +86,43 @@ export class AudioControl {
         this.analyser.smoothingTimeConstant = 0;
         this.frequencyData = new Uint8Array(this.analyser.frequencyBinCount);
         this.timeData = new Uint8Array(this.analyser.fftSize);
+        this.#updateBandRanges();
+    }
+
+
+    #updateBandRanges() {
+        if (!this.analyser || !this.audioContext || !this.frequencyData?.length) return;
+        const nyquist = this.audioContext.sampleRate / 2;
+        const binHz = nyquist / this.frequencyData.length;
+        const range = (lowHz, highHz) => [
+            Math.max(0, Math.floor(lowHz / binHz)),
+            Math.min(this.frequencyData.length - 1, Math.ceil(highHz / binHz)),
+        ];
+        this.bandRanges.overall = range(30, 12000);
+        this.bandRanges.bass = range(30, 250);
+        this.bandRanges.mids = range(250, 2200);
+        this.bandRanges.treble = range(2200, 12000);
+    }
+
+    #bandRms(range) {
+        let sumSq = 0;
+        let count = 0;
+        const start = range[0];
+        const end = range[1];
+        for (let i = start; i <= end; i++) {
+            const n = this.frequencyData[i] / 255;
+            sumSq += n * n;
+            count++;
+        }
+        return count ? Math.sqrt(sumSq / count) : 0;
+    }
+
+    #smoothBand(key, rawValue) {
+        const gated = Math.max(0, rawValue - this.threshold) / Math.max(0.001, 1 - this.threshold);
+        const boosted = clamp(gated * this.sensitivity, 0, 1);
+        const alpha = 1 - this.smoothing;
+        this.smoothed[key] += (boosted - this.smoothed[key]) * alpha;
+        this.analysisFrame[key] = this.smoothed[key];
     }
 
     setFFTSize(size) {
@@ -213,26 +254,15 @@ export class AudioControl {
 
     getAnalysis() {
         if (!this.analyser || !this.activeAnalysisSource) {
-            return { overall: 0, bass: 0, mids: 0, treble: 0 };
+            this.analysisFrame.overall = 0;
+            this.analysisFrame.bass = 0;
+            this.analysisFrame.mids = 0;
+            this.analysisFrame.treble = 0;
+            return this.analysisFrame;
         }
 
         this.analyser.getByteFrequencyData(this.frequencyData);
         this.analyser.getByteTimeDomainData(this.timeData);
-
-        const nyquist = this.audioContext.sampleRate / 2;
-        const binHz = nyquist / this.frequencyData.length;
-        const band = (lowHz, highHz) => {
-            const start = Math.max(0, Math.floor(lowHz / binHz));
-            const end = Math.min(this.frequencyData.length - 1, Math.ceil(highHz / binHz));
-            let sumSq = 0;
-            let count = 0;
-            for (let i = start; i <= end; i++) {
-                const n = this.frequencyData[i] / 255;
-                sumSq += n * n;
-                count++;
-            }
-            return count ? Math.sqrt(sumSq / count) : 0;
-        };
 
         let timeSumSq = 0;
         for (let i = 0; i < this.timeData.length; i++) {
@@ -241,22 +271,14 @@ export class AudioControl {
         }
         const rms = Math.sqrt(timeSumSq / this.timeData.length);
 
-        const raw = {
-            overall: Math.max(rms * 1.8, band(30, 12000) * 0.82),
-            bass: band(30, 250),
-            mids: band(250, 2200),
-            treble: band(2200, 12000),
-        };
-
-        const alpha = 1 - this.smoothing;
-        Object.keys(raw).forEach((key) => {
-            const gated = Math.max(0, raw[key] - this.threshold) / Math.max(0.001, 1 - this.threshold);
-            const boosted = clamp(gated * this.sensitivity, 0, 1);
-            this.smoothed[key] += (boosted - this.smoothed[key]) * alpha;
-        });
+        const overall = Math.max(rms * 1.8, this.#bandRms(this.bandRanges.overall) * 0.82);
+        this.#smoothBand('overall', overall);
+        this.#smoothBand('bass', this.#bandRms(this.bandRanges.bass));
+        this.#smoothBand('mids', this.#bandRms(this.bandRanges.mids));
+        this.#smoothBand('treble', this.#bandRms(this.bandRanges.treble));
 
         if (this.isDev) this.visualize();
-        return { ...this.smoothed };
+        return this.analysisFrame;
     }
 
     // Compatibility with the original sketch API.

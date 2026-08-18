@@ -1,6 +1,7 @@
 import { Sketch } from './sketch-04.js';
 import { AudioControl } from './audio-control.js';
 import { createLoopController } from './loop.js';
+import { createHudController } from './hud.js';
 
 const isDev = false;
 const audioControl = new AudioControl(isDev);
@@ -11,6 +12,9 @@ let sketch = null;
 let toastTimer = null;
 let activeRecorder = null;
 let cancelRequested = false;
+let exportCompositeCanvas = null;
+let exportCompositeContext = null;
+let exportCompositeRaf = 0;
 
 const $ = (selector) => document.querySelector(selector);
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
@@ -77,6 +81,25 @@ const viewportPresets = {
     portrait: 9 / 16,
 };
 
+const viewportLabels = {
+    fill: 'Fill Window',
+    landscape: 'Landscape — 16:9',
+    square: 'Square — 1:1',
+    portrait: 'Portrait — 9:16',
+};
+
+const hudController = createHudController({
+    hudCanvas: $('#hud-canvas'),
+    sourceCanvas: canvas,
+    sketch,
+    audioControl,
+    getViewportLabel: () => viewportLabels[$('#viewport-preset')?.value || 'fill'] || 'Fill Window',
+    formatTime,
+    getPreviewFps: () => sketch.getPerformanceStats().fps,
+    getPerformanceStats: () => sketch.getPerformanceStats(),
+    isExporting: () => Boolean(activeRecorder),
+});
+
 function fitViewport() {
     const preset = $('#viewport-preset')?.value || 'fill';
     const aspect = viewportPresets[preset];
@@ -101,6 +124,7 @@ function fitViewport() {
     canvasFrame.style.width = `${Math.max(1, Math.floor(width))}px`;
     canvasFrame.style.height = `${Math.max(1, Math.floor(height))}px`;
     if (sketch) sketch.resize();
+    hudController?.renderPreview();
 }
 
 const resizeObserver = new ResizeObserver(() => sketch?.resize());
@@ -208,7 +232,7 @@ $('#audio-file').addEventListener('change', async (event) => {
         $('#reset-audio').disabled = false;
         $('#loop-btn').disabled = false;
         updateExportEstimate();
-        setStatus('Audio loaded');
+        setStatus('Visualizer ready');
         toast('Audio loaded');
     } catch (error) {
         console.error(error);
@@ -289,6 +313,25 @@ $('#background-color').addEventListener('input', (e) => sketch.setAppearanceSett
 bindRange('brightness', 'brightness-value', (v) => sketch.setAppearanceSettings({ materialBrightness: v }), { format: (v) => v.toFixed(2) });
 bindRange('iridescence', 'iridescence-value', (v) => sketch.setAppearanceSettings({ iridescence: v }), { format: (v) => v.toFixed(2) });
 
+$('#hud-enabled').addEventListener('change', (e) => hudController.setEnabled(e.target.checked));
+bindRange('hud-opacity', 'hud-opacity-value', (v) => hudController.setOpacity(v), { format: (v) => v.toFixed(2) });
+bindRange('hud-scale', 'hud-scale-value', (v) => hudController.setScale(v), { format: (v) => v.toFixed(2) });
+
+$('#performance-mode').addEventListener('change', (e) => sketch.setPerformanceSettings({ mode: e.target.value }));
+$('#simulation-quality').addEventListener('change', (e) => sketch.setPerformanceSettings({ simulationQuality: e.target.value }));
+bindRange('render-scale', 'render-scale-value', (v) => sketch.setPerformanceSettings({ renderScale: v / 100 }), { format: (v) => v.toFixed(0) });
+$('#adaptive-simulation').addEventListener('change', (e) => sketch.setPerformanceSettings({ adaptiveSimulation: e.target.checked }));
+$('#fps-limit').addEventListener('change', (e) => sketch.setPerformanceSettings({ fpsLimit: Number(e.target.value) }));
+$('#show-performance-stats').addEventListener('change', (e) => sketch.setPerformanceSettings({ showStats: e.target.checked }));
+sketch.setPerformanceSettings({
+    mode: $('#performance-mode').value,
+    simulationQuality: $('#simulation-quality').value,
+    renderScale: Number($('#render-scale').value) / 100,
+    adaptiveSimulation: $('#adaptive-simulation').checked,
+    fpsLimit: Number($('#fps-limit').value),
+    showStats: $('#show-performance-stats').checked,
+});
+
 function syncCameraUI() {
     const c = sketch.cameraControls;
     const pairs = [
@@ -349,6 +392,22 @@ const sectionDefaults = {
         setControl('background-color', '#050505');
         setControl('brightness', 1);
         setControl('iridescence', 1);
+    },
+    hud: () => {
+        setControl('hud-enabled', true, 'change');
+        setControl('hud-opacity', 0.9);
+        setControl('hud-scale', 1);
+    },
+    performance: () => {
+        // Reset through Manual first so any Auto-mode downshift state is cleared,
+        // then return to the default Auto mode at full quality.
+        setControl('performance-mode', 'manual', 'change');
+        setControl('simulation-quality', 'ultra', 'change');
+        setControl('render-scale', 100);
+        setControl('adaptive-simulation', true, 'change');
+        setControl('fps-limit', 60, 'change');
+        setControl('show-performance-stats', false, 'change');
+        setControl('performance-mode', 'auto', 'change');
     },
     export: () => {
         $('#export-file-name').value = '';
@@ -442,6 +501,41 @@ function nextFrames(count = 2) {
         const tick = () => count-- <= 0 ? resolve() : requestAnimationFrame(tick);
         requestAnimationFrame(tick);
     });
+}
+
+function ensureExportCompositeCanvas(width, height) {
+    if (!exportCompositeCanvas) {
+        exportCompositeCanvas = document.createElement('canvas');
+        exportCompositeContext = exportCompositeCanvas.getContext('2d', { alpha: false });
+    }
+    if (exportCompositeCanvas.width !== width || exportCompositeCanvas.height !== height) {
+        exportCompositeCanvas.width = width;
+        exportCompositeCanvas.height = height;
+    }
+    return exportCompositeCanvas;
+}
+
+function compositeExportFrame(width, height) {
+    const output = ensureExportCompositeCanvas(width, height);
+    exportCompositeContext.fillStyle = '#000000';
+    exportCompositeContext.fillRect(0, 0, width, height);
+    exportCompositeContext.drawImage(canvas, 0, 0, width, height);
+    hudController.draw(exportCompositeContext, width, height);
+    return output;
+}
+
+function startExportCompositeLoop(width, height) {
+    stopExportCompositeLoop();
+    const draw = () => {
+        compositeExportFrame(width, height);
+        exportCompositeRaf = requestAnimationFrame(draw);
+    };
+    draw();
+}
+
+function stopExportCompositeLoop() {
+    if (exportCompositeRaf) cancelAnimationFrame(exportCompositeRaf);
+    exportCompositeRaf = 0;
 }
 
 function formatDurationLabel(seconds) {
@@ -551,7 +645,7 @@ async function exportVideo() {
         toast('Load an audio file before video export');
         return;
     }
-    if (!window.MediaRecorder || !canvas.captureStream) {
+    if (!window.MediaRecorder || !HTMLCanvasElement.prototype.captureStream) {
         setExportStatus('Video export is not supported in this browser.', 'error');
         toast('Video export is not supported in this browser');
         return;
@@ -602,9 +696,12 @@ async function exportVideo() {
         audioControl.setCurrentTime(startTime);
 
         sketch.setDrawingBufferSize(resolution.width, resolution.height);
+        sketch.setExportMode(true);
         await nextFrames(2);
 
-        canvasStream = canvas.captureStream(fps);
+        const exportCanvas = compositeExportFrame(resolution.width, resolution.height);
+        startExportCompositeLoop(resolution.width, resolution.height);
+        canvasStream = exportCanvas.captureStream(fps);
         const audioStream = audioControl.getCaptureStream();
         const tracks = [...canvasStream.getVideoTracks(), ...(audioStream ? audioStream.getAudioTracks() : [])];
         const combinedStream = new MediaStream(tracks);
@@ -674,8 +771,10 @@ async function exportVideo() {
         toast('Video export failed');
         setStatus('Export failed', 'error');
     } finally {
+        stopExportCompositeLoop();
         activeRecorder = null;
         canvasStream?.getTracks().forEach((track) => track.stop());
+        sketch.setExportMode(false);
         sketch.restoreDisplayResolution();
         await nextFrames(1);
         fitViewport();
@@ -701,8 +800,10 @@ $('#export-png').addEventListener('click', async () => {
     setStatus('Exporting PNG', 'busy');
     try {
         sketch.setDrawingBufferSize(resolution.width, resolution.height);
+        sketch.setExportMode(true);
         await nextFrames(2);
-        const blob = await new Promise((resolve, reject) => canvas.toBlob((value) => value ? resolve(value) : reject(new Error('PNG capture failed')), 'image/png'));
+        const exportCanvas = compositeExportFrame(resolution.width, resolution.height);
+        const blob = await new Promise((resolve, reject) => exportCanvas.toBlob((value) => value ? resolve(value) : reject(new Error('PNG capture failed')), 'image/png'));
         downloadBlob(blob, `${getExportFileBaseName()}-frame.png`);
         setExportStatus(`PNG exported at ${resolution.width}×${resolution.height}.`, 'done');
         toast('PNG exported');
@@ -711,6 +812,7 @@ $('#export-png').addEventListener('click', async () => {
         setExportStatus(`EXPORT ERROR / ${error.message}`, 'error');
         toast('PNG export failed');
     } finally {
+        sketch.setExportMode(false);
         sketch.restoreDisplayResolution();
         fitViewport();
         setStatus('Visualizer ready');
@@ -732,6 +834,7 @@ function buildSettingsPayload() {
             loop: loopController.getState(),
         },
         viewport: $('#viewport-preset').value,
+        hud: hudController.getState(),
         export: {
             fileType: getVideoFileType(),
             resolution: $('#export-resolution').value,
@@ -759,8 +862,10 @@ function applyImportedSettings(payload) {
     const pointer = settings.pointer || {};
     const camera = settings.camera || {};
     const appearance = settings.appearance || {};
+    const performanceSettings = settings.performance || {};
     const audio = payload.audio || {};
     const exportSettings = payload.export || {};
+    const hud = payload.hud || {};
 
     if (settings.baseZoom != null) setControl('base-zoom', settings.baseZoom);
     if (reactive.enabled != null) setControl('reactive-enabled', reactive.enabled, 'change');
@@ -784,12 +889,25 @@ function applyImportedSettings(payload) {
     if (appearance.backgroundColor) setControl('background-color', appearance.backgroundColor);
     if (appearance.materialBrightness != null) setControl('brightness', appearance.materialBrightness);
     if (appearance.iridescence != null) setControl('iridescence', appearance.iridescence);
+    if (Object.keys(performanceSettings).length) {
+        const importedMode = performanceSettings.mode || 'auto';
+        setControl('performance-mode', 'manual', 'change');
+        if (performanceSettings.simulationQuality) setControl('simulation-quality', performanceSettings.simulationQuality, 'change');
+        if (performanceSettings.renderScale != null) setControl('render-scale', performanceSettings.renderScale * 100);
+        if (performanceSettings.adaptiveSimulation != null) setControl('adaptive-simulation', performanceSettings.adaptiveSimulation, 'change');
+        if (performanceSettings.fpsLimit != null) setControl('fps-limit', performanceSettings.fpsLimit, 'change');
+        if (performanceSettings.showStats != null) setControl('show-performance-stats', performanceSettings.showStats, 'change');
+        setControl('performance-mode', importedMode, 'change');
+    }
     if (audio.fftSize != null) setControl('fft-size', audio.fftSize, 'change');
     if (audio.sensitivity != null) setControl('sensitivity', audio.sensitivity);
     if (audio.smoothing != null) setControl('smoothing', audio.smoothing);
     if (audio.threshold != null) setControl('threshold', audio.threshold);
     if (audio.volume != null) setControl('volume', audio.volume);
     if (audio.muted != null) setControl('mute-audio', audio.muted, 'change');
+    if (hud.hudEnabled != null) setControl('hud-enabled', hud.hudEnabled, 'change');
+    if (hud.hudOpacity != null) setControl('hud-opacity', hud.hudOpacity);
+    if (hud.hudScale != null) setControl('hud-scale', hud.hudScale);
     if (payload.viewport) setControl('viewport-preset', payload.viewport, 'change');
     if (exportSettings.fileType) setControl('video-file-type', exportSettings.fileType, 'change');
     if (exportSettings.resolution) setControl('export-resolution', exportSettings.resolution, 'change');
@@ -863,6 +981,18 @@ function updateUI(time) {
             $(`#meter-${key}`).style.width = `${clamp(levels[key] || 0, 0, 1) * 100}%`;
         });
         if (sketch.cameraControls.autoRotate || sketch.isOrbiting) syncCameraUI();
+        hudController.renderPreview();
+    }
+
+    if (!updateUI.lastPerformanceUpdate || time - updateUI.lastPerformanceUpdate > 250) {
+        updateUI.lastPerformanceUpdate = time;
+        const stats = sketch.getPerformanceStats();
+        $('#perf-fps').textContent = `${Math.round(stats.fps)}`;
+        $('#perf-frame').textContent = `${stats.frameMs.toFixed(1)} ms`;
+        $('#perf-simulation').textContent = `${stats.simulationMs.toFixed(2)} ms`;
+        $('#perf-render').textContent = `${stats.renderMs.toFixed(2)} ms`;
+        $('#perf-effective').textContent = `${String(stats.effectiveQuality).toUpperCase()} / ${Math.round(stats.effectiveRenderScale * 100)}%`;
+        $('#perf-solver').textContent = `${stats.effectiveSteps} step${stats.effectiveSteps === 1 ? '' : 's'} @ ${Math.round(stats.simulationHz)} Hz`;
     }
     requestAnimationFrame(updateUI);
 }

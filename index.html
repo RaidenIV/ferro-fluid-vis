@@ -25,6 +25,7 @@
   <div class="visualizer-container" id="visualizer-container">
     <div id="canvas-frame">
       <canvas id="visualizer-canvas"></canvas>
+      <canvas id="hud-canvas" aria-hidden="true"></canvas>
     </div>
 
     <div id="controls" aria-label="Visualizer controls">
@@ -223,6 +224,95 @@
             <div class="control color-control"><label for="background-color">Background</label><input id="background-color" type="color" value="#050505"></div>
             <div class="control"><label for="brightness">Material Brightness</label><div class="value-editor"><input class="value-input" id="brightness-value" type="number" min="0.35" max="2" step="0.05" value="1"><span class="value-suffix">×</span></div><input id="brightness" type="range" min="0.35" max="2" step="0.05" value="1"></div>
             <div class="control"><label for="iridescence">Iridescence</label><div class="value-editor"><input class="value-input" id="iridescence-value" type="number" min="0" max="2" step="0.05" value="1"><span class="value-suffix">×</span></div><input id="iridescence" type="range" min="0" max="2" step="0.05" value="1"></div>
+          </div>
+        </section>
+
+
+        <section class="section is-collapsed" data-section="performance">
+          <div class="collapsible-header">
+            <h2 tabindex="0">Performance</h2>
+            <div class="collapsible-header-actions">
+              <button class="section-reset" data-reset-section="performance" title="Reset Performance" type="button">↺</button>
+              <button class="collapse-toggle" aria-expanded="false" title="Expand Performance" type="button">+</button>
+            </div>
+          </div>
+          <div class="collapsible-content" id="sectionPerformance">
+            <div class="control select-control">
+              <label for="performance-mode">Performance Mode</label>
+              <select id="performance-mode">
+                <option value="auto" selected>Auto</option>
+                <option value="manual">Manual</option>
+              </select>
+            </div>
+            <div class="control select-control">
+              <label for="simulation-quality">Simulation Quality</label>
+              <select id="simulation-quality">
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+                <option value="ultra" selected>Ultra</option>
+              </select>
+              <div class="control-hint">Controls the internal fluid surface resolution independently of the viewport.</div>
+            </div>
+            <div class="control">
+              <label for="render-scale">Render Scale</label>
+              <div class="value-editor"><input class="value-input" id="render-scale-value" type="number" min="50" max="100" step="5" value="100"><span class="value-suffix">%</span></div>
+              <input id="render-scale" type="range" min="50" max="100" step="5" value="100">
+            </div>
+            <div class="control toggle-control">
+              <label for="adaptive-simulation">Adaptive Simulation</label>
+              <label class="switch" for="adaptive-simulation"><input class="switch-input" id="adaptive-simulation" type="checkbox" role="switch" checked><span class="switch-track"></span></label>
+            </div>
+            <div class="control select-control">
+              <label for="fps-limit">FPS Limit</label>
+              <select id="fps-limit">
+                <option value="30">30 FPS</option>
+                <option value="60" selected>60 FPS</option>
+                <option value="120">120 FPS</option>
+                <option value="0">Unlimited</option>
+              </select>
+            </div>
+            <div class="control toggle-control">
+              <label for="show-performance-stats">Show Performance Stats</label>
+              <label class="switch" for="show-performance-stats"><input class="switch-input" id="show-performance-stats" type="checkbox" role="switch"><span class="switch-track"></span></label>
+            </div>
+            <div class="performance-readout" aria-label="Performance statistics">
+              <div><span>FPS</span><strong id="perf-fps">60</strong></div>
+              <div><span>Frame</span><strong id="perf-frame">16.7 ms</strong></div>
+              <div><span>Simulation</span><strong id="perf-simulation">—</strong></div>
+              <div><span>Render</span><strong id="perf-render">—</strong></div>
+              <div><span>Effective</span><strong id="perf-effective">ULTRA / 100%</strong></div>
+              <div><span>Solver</span><strong id="perf-solver">1 step @ 60 Hz</strong></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section is-collapsed" data-section="hud" data-collapsible-title="HUD">
+          <div class="collapsible-header">
+            <h2 tabindex="0">HUD</h2>
+            <div class="collapsible-header-actions">
+              <button class="section-reset" data-reset-section="hud" title="Reset HUD to defaults" aria-label="Reset HUD to defaults" type="button">↺</button>
+              <button class="collapse-toggle" aria-expanded="false" title="Expand HUD" aria-label="Expand HUD" type="button">+</button>
+            </div>
+          </div>
+          <div class="collapsible-content" id="sectionHud">
+            <div class="control toggle-control">
+              <label for="hud-enabled">HUD Overlay</label>
+              <label class="switch" for="hud-enabled" aria-label="HUD overlay">
+                <input class="switch-input" id="hud-enabled" type="checkbox" role="switch" checked>
+                <span class="switch-track" aria-hidden="true"></span>
+              </label>
+            </div>
+            <div class="control">
+              <label for="hud-opacity">HUD Opacity</label>
+              <div class="value-editor"><input class="value-input" id="hud-opacity-value" type="number" min="0" max="1" step="0.05" value="0.9" aria-label="HUD Opacity Value"></div>
+              <input type="range" id="hud-opacity" min="0" max="1" step="0.05" value="0.9">
+            </div>
+            <div class="control">
+              <label for="hud-scale">HUD Scale</label>
+              <div class="value-editor"><input class="value-input" id="hud-scale-value" type="number" min="0.5" max="2" step="0.05" value="1" aria-label="HUD Scale Value"><span class="value-suffix" aria-hidden="true">×</span></div>
+              <input type="range" id="hud-scale" min="0.5" max="2" step="0.05" value="1">
+            </div>
           </div>
         </section>
 
