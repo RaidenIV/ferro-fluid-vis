@@ -15,6 +15,11 @@ let cancelRequested = false;
 let exportCompositeCanvas = null;
 let exportCompositeContext = null;
 let exportCompositeRaf = 0;
+let applyingReactionPreset = false;
+let applyingEnvironmentPreset = false;
+let previousPresetSnapshot = null;
+let currentPresetSnapshot = null;
+const lockedParameters = new Set();
 
 const $ = (selector) => document.querySelector(selector);
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
@@ -129,6 +134,31 @@ resizeObserver.observe(canvasFrame);
 window.addEventListener('resize', fitViewport);
 $('#viewport-preset').addEventListener('change', fitViewport);
 fitViewport();
+
+async function setPresentationMode(enabled) {
+    document.body.classList.toggle('presentation-mode', enabled);
+    if (enabled) {
+        try {
+            if (!document.fullscreenElement && document.documentElement.requestFullscreen) await document.documentElement.requestFullscreen();
+        } catch (_) {}
+    } else if (document.fullscreenElement && document.exitFullscreen) {
+        try { await document.exitFullscreen(); } catch (_) {}
+    }
+    fitViewport();
+}
+
+$('#presentation-mode').addEventListener('click', () => setPresentationMode(!document.body.classList.contains('presentation-mode')));
+document.addEventListener('fullscreenchange', () => {
+    if (!document.fullscreenElement && document.body.classList.contains('presentation-mode')) {
+        document.body.classList.remove('presentation-mode');
+        fitViewport();
+    }
+});
+document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && document.body.classList.contains('presentation-mode') && !document.fullscreenElement) {
+        setPresentationMode(false);
+    }
+});
 
 /* -------------------------------------------------------------------------
    Sidebar behavior — mirrors the boid visualizer control panel
@@ -281,21 +311,74 @@ $('#mute-audio').addEventListener('change', (event) => audioControl.setMuted(eve
 /* -------------------------------------------------------------------------
    Audio analysis and visualizer controls
 ------------------------------------------------------------------------- */
+const reactionPresets = {
+    balanced: { sensitivity: 1.35, smoothing: 0.72, threshold: 0.025, attack: 22, release: 180, transient: 0.35, curves: ['linear','linear','linear','linear'], region: false, regionStrength: 0.85, movement: true, bassPush: 1, midRotation: 1, treble: 1, spikeHeight: 1.35, spikeSharpness: 0.45, agitation: 0.65 },
+    'bass-heavy': { sensitivity: 1.55, smoothing: 0.68, threshold: 0.02, attack: 16, release: 220, transient: 0.45, curves: ['smooth','punchy','smooth','smooth'], region: true, regionStrength: 1.15, movement: true, bassPush: 1.55, midRotation: 0.8, treble: 0.65, spikeHeight: 1.55, spikeSharpness: 0.5, agitation: 0.85 },
+    riddim: { sensitivity: 1.7, smoothing: 0.55, threshold: 0.018, attack: 8, release: 115, transient: 0.9, curves: ['punchy','punchy','punchy','exponential'], region: true, regionStrength: 1.35, movement: true, bassPush: 1.45, midRotation: 1.35, treble: 1.2, spikeHeight: 1.8, spikeSharpness: 0.72, agitation: 1.15 },
+    ambient: { sensitivity: 1.1, smoothing: 0.86, threshold: 0.03, attack: 80, release: 520, transient: 0.12, curves: ['smooth','smooth','smooth','smooth'], region: true, regionStrength: 0.55, movement: true, bassPush: 0.6, midRotation: 0.85, treble: 0.45, spikeHeight: 1.15, spikeSharpness: 0.35, agitation: 0.35 },
+    percussive: { sensitivity: 1.6, smoothing: 0.5, threshold: 0.02, attack: 5, release: 90, transient: 1.2, curves: ['punchy','punchy','punchy','punchy'], region: true, regionStrength: 1, movement: true, bassPush: 1.15, midRotation: 0.75, treble: 1.4, spikeHeight: 1.6, spikeSharpness: 0.7, agitation: 1.0 },
+    smooth: { sensitivity: 1.25, smoothing: 0.9, threshold: 0.025, attack: 120, release: 650, transient: 0.08, curves: ['smooth','smooth','smooth','smooth'], region: false, regionStrength: 0.7, movement: true, bassPush: 0.65, midRotation: 0.7, treble: 0.35, spikeHeight: 1.25, spikeSharpness: 0.38, agitation: 0.3 },
+};
+
+function markReactionCustom() {
+    if (!applyingReactionPreset && $('#reaction-preset')) $('#reaction-preset').value = 'custom';
+}
+
+function applyReactionPreset(name) {
+    const preset = reactionPresets[name];
+    if (!preset) return;
+    const setPresetControl = (id, value, eventName = 'input') => {
+        if (!isParameterLocked(id)) setControl(id, value, eventName);
+    };
+    applyingReactionPreset = true;
+    setPresetControl('sensitivity', preset.sensitivity);
+    setPresetControl('smoothing', preset.smoothing);
+    setPresetControl('threshold', preset.threshold);
+    setPresetControl('attack', preset.attack);
+    setPresetControl('release', preset.release);
+    setPresetControl('transient-impact', preset.transient);
+    ['overall','bass','mids','treble'].forEach((key, index) => setPresetControl(`curve-${key}`, preset.curves[index], 'change'));
+    setPresetControl('region-mapping', preset.region, 'change');
+    setPresetControl('region-strength', preset.regionStrength);
+    setPresetControl('movement-mapping', preset.movement, 'change');
+    setPresetControl('bass-push', preset.bassPush);
+    setPresetControl('mid-rotation', preset.midRotation);
+    setPresetControl('treble-turbulence', preset.treble);
+    setPresetControl('spike-height', preset.spikeHeight);
+    setPresetControl('spike-sharpness', preset.spikeSharpness);
+    setPresetControl('agitation', preset.agitation);
+    applyingReactionPreset = false;
+    $('#reaction-preset').value = name;
+}
+
+$('#reaction-preset').addEventListener('change', (e) => { if (e.target.value !== 'custom') applyReactionPreset(e.target.value); });
 $('#reactive-enabled').addEventListener('change', (e) => sketch.setAudioReactiveSettings({ enabled: e.target.checked }));
-$('#reaction-band').addEventListener('change', (e) => sketch.setAudioReactiveSettings({ band: e.target.value }));
+$('#reaction-band').addEventListener('change', (e) => { sketch.setAudioReactiveSettings({ band: e.target.value }); markReactionCustom(); });
+['overall','bass','mids','treble'].forEach((key) => {
+    $(`#curve-${key}`).addEventListener('change', (e) => { audioControl.setResponseCurve(key, e.target.value); markReactionCustom(); });
+});
 $('#fft-size').addEventListener('change', (e) => audioControl.setFFTSize(Number(e.target.value)));
-bindRange('sensitivity', 'sensitivity-value', (v) => audioControl.setSensitivity(v), { format: (v) => v.toFixed(2) });
-bindRange('smoothing', 'smoothing-value', (v) => audioControl.setSmoothing(v), {
+bindRange('sensitivity', 'sensitivity-value', (v) => { audioControl.setSensitivity(v); markReactionCustom(); }, { format: (v) => v.toFixed(2) });
+bindRange('smoothing', 'smoothing-value', (v) => { audioControl.setSmoothing(v); markReactionCustom(); }, {
     toDisplay: (v) => v * 100,
     fromDisplay: (v) => v / 100,
     format: (v) => v.toFixed(0),
 });
-bindRange('threshold', 'threshold-value', (v) => audioControl.setThreshold(v), { format: (v) => v.toFixed(3) });
+bindRange('threshold', 'threshold-value', (v) => { audioControl.setThreshold(v); markReactionCustom(); }, { format: (v) => v.toFixed(3) });
+bindRange('attack', 'attack-value', (v) => { audioControl.setAttack(v); markReactionCustom(); }, { format: (v) => v.toFixed(0) });
+bindRange('release', 'release-value', (v) => { audioControl.setRelease(v); markReactionCustom(); }, { format: (v) => v.toFixed(0) });
+bindRange('transient-impact', 'transient-impact-value', (v) => { audioControl.setTransientImpact(v); sketch.setAudioReactiveSettings({ transientImpact: v }); markReactionCustom(); }, { format: (v) => v.toFixed(2) });
+$('#region-mapping').addEventListener('change', (e) => { sketch.setAudioReactiveSettings({ regionMapping: e.target.checked }); markReactionCustom(); });
+bindRange('region-strength', 'region-strength-value', (v) => { sketch.setAudioReactiveSettings({ regionStrength: v }); markReactionCustom(); }, { format: (v) => v.toFixed(2) });
+$('#movement-mapping').addEventListener('change', (e) => { sketch.setAudioReactiveSettings({ movementMapping: e.target.checked }); markReactionCustom(); });
+bindRange('bass-push', 'bass-push-value', (v) => { sketch.setAudioReactiveSettings({ bassPush: v }); markReactionCustom(); }, { format: (v) => v.toFixed(2) });
+bindRange('mid-rotation', 'mid-rotation-value', (v) => { sketch.setAudioReactiveSettings({ midRotation: v }); markReactionCustom(); }, { format: (v) => v.toFixed(2) });
+bindRange('treble-turbulence', 'treble-turbulence-value', (v) => { sketch.setAudioReactiveSettings({ trebleTurbulence: v }); markReactionCustom(); }, { format: (v) => v.toFixed(2) });
 
 bindRange('base-zoom', 'base-zoom-value', (v) => sketch.setBaseZoom(v), { format: (v) => v.toFixed(2) });
-bindRange('spike-height', 'spike-height-value', (v) => sketch.setAudioReactiveSettings({ spikeHeight: v }), { format: (v) => v.toFixed(2) });
-bindRange('spike-sharpness', 'spike-sharpness-value', (v) => sketch.setAudioReactiveSettings({ spikeSharpness: v }), { format: (v) => v.toFixed(2) });
-bindRange('agitation', 'agitation-value', (v) => sketch.setAudioReactiveSettings({ agitation: v }), { format: (v) => v.toFixed(2) });
+bindRange('spike-height', 'spike-height-value', (v) => { sketch.setAudioReactiveSettings({ spikeHeight: v }); markReactionCustom(); }, { format: (v) => v.toFixed(2) });
+bindRange('spike-sharpness', 'spike-sharpness-value', (v) => { sketch.setAudioReactiveSettings({ spikeSharpness: v }); markReactionCustom(); }, { format: (v) => v.toFixed(2) });
+bindRange('agitation', 'agitation-value', (v) => { sketch.setAudioReactiveSettings({ agitation: v }); markReactionCustom(); }, { format: (v) => v.toFixed(2) });
 bindRange('camera-pulse', 'camera-pulse-value', (v) => sketch.setAudioReactiveSettings({ cameraZoom: v }), { format: (v) => v.toFixed(2) });
 
 // Simulation controls update the live GPU simulation UBO through Sketch.
@@ -307,20 +390,52 @@ bindRange('steps', 'steps-value', (v) => sketch.setSimulationSettings({ STEPS: v
 bindRange('pointer-radius', 'pointer-radius-value', (v) => sketch.setPointerSettings({ RADIUS: v }), { format: (v) => v.toFixed(2) });
 bindRange('pointer-strength', 'pointer-strength-value', (v) => sketch.setPointerSettings({ STRENGTH: v }), { format: (v) => v.toFixed(0) });
 
+$('#camera-movement').addEventListener('change', (e) => sketch.setCameraSettings({ movementPreset: e.target.value }));
 bindRange('yaw', 'yaw-value', (v) => sketch.setCameraSettings({ yaw: v }), { format: (v) => v.toFixed(1) });
 bindRange('elevation', 'elevation-value', (v) => sketch.setCameraSettings({ elevation: v }), { format: (v) => v.toFixed(1) });
 bindRange('distance', 'distance-value', (v) => sketch.setCameraSettings({ distance: v }), { format: (v) => v.toFixed(2) });
 $('#auto-rotate').addEventListener('change', (e) => sketch.setCameraSettings({ autoRotate: e.target.checked }));
 bindRange('rotate-speed', 'rotate-speed-value', (v) => sketch.setCameraSettings({ rotateSpeed: v }), { format: (v) => v.toFixed(1) });
+bindRange('camera-smoothing', 'camera-smoothing-value', (v) => sketch.setCameraSettings({ smoothing: v / 100 }), { format: (v) => v.toFixed(0) });
 $('#reset-camera').addEventListener('click', () => {
     sketch.resetCamera();
     syncCameraUI();
     toast('Visualization centered');
 });
 
-$('#background-color').addEventListener('input', (e) => sketch.setAppearanceSettings({ backgroundColor: e.target.value }));
+const environmentPresets = {
+    'black-studio': { background: '#050505' },
+    'dark-metallic': { background: '#020407' },
+    'soft-white': { background: '#e6e6e6' },
+    colored: { background: '#09051a' },
+};
+$('#environment-preset').addEventListener('change', (e) => {
+    const name = e.target.value;
+    applyingEnvironmentPreset = true;
+    const preset = environmentPresets[name];
+    if (preset && !isParameterLocked('background-color')) setControl('background-color', preset.background, 'input');
+    sketch.setAppearanceSettings({ environmentPreset: name });
+    applyingEnvironmentPreset = false;
+});
+$('#background-color').addEventListener('input', (e) => {
+    sketch.setAppearanceSettings({ backgroundColor: e.target.value });
+    if (!applyingEnvironmentPreset) {
+        $('#environment-preset').value = 'custom';
+        sketch.setAppearanceSettings({ environmentPreset: 'custom' });
+    }
+});
 bindRange('brightness', 'brightness-value', (v) => sketch.setAppearanceSettings({ materialBrightness: v }), { format: (v) => v.toFixed(2) });
 bindRange('iridescence', 'iridescence-value', (v) => sketch.setAppearanceSettings({ iridescence: v }), { format: (v) => v.toFixed(2) });
+bindRange('roughness', 'roughness-value', (v) => sketch.setAppearanceSettings({ roughness: v }), { format: (v) => v.toFixed(2) });
+bindRange('metallic', 'metallic-value', (v) => sketch.setAppearanceSettings({ metallic: v }), { format: (v) => v.toFixed(2) });
+bindRange('reflection-intensity', 'reflection-intensity-value', (v) => sketch.setAppearanceSettings({ reflectionIntensity: v }), { format: (v) => v.toFixed(2) });
+bindRange('fresnel-strength', 'fresnel-strength-value', (v) => sketch.setAppearanceSettings({ fresnelStrength: v }), { format: (v) => v.toFixed(2) });
+bindRange('environment-intensity', 'environment-intensity-value', (v) => sketch.setAppearanceSettings({ environmentIntensity: v }), { format: (v) => v.toFixed(2) });
+bindRange('highlight-contrast', 'highlight-contrast-value', (v) => sketch.setAppearanceSettings({ highlightContrast: v }), { format: (v) => v.toFixed(2) });
+$('#bloom-enabled').addEventListener('change', (e) => sketch.setAppearanceSettings({ bloomEnabled: e.target.checked }));
+bindRange('bloom-strength', 'bloom-strength-value', (v) => sketch.setAppearanceSettings({ bloomStrength: v }), { format: (v) => v.toFixed(2) });
+bindRange('bloom-threshold', 'bloom-threshold-value', (v) => sketch.setAppearanceSettings({ bloomThreshold: v }), { format: (v) => v.toFixed(2) });
+bindRange('bloom-radius', 'bloom-radius-value', (v) => sketch.setAppearanceSettings({ bloomRadius: v }), { format: (v) => v.toFixed(1) });
 
 $('#hud-enabled').addEventListener('change', (e) => hudController.setEnabled(e.target.checked));
 bindRange('hud-opacity', 'hud-opacity-value', (v) => hudController.setOpacity(v), { format: (v) => v.toFixed(2) });
@@ -341,6 +456,14 @@ sketch.setPerformanceSettings({
     showStats: $('#show-performance-stats').checked,
 });
 
+const gpuCapabilities = sketch.getGpuCapabilities();
+$('#gpu-tier').textContent = `${gpuCapabilities.tier} / ${gpuCapabilities.recommendedQuality.toUpperCase()}`;
+$('#gpu-renderer').textContent = `${gpuCapabilities.renderer} · max texture ${gpuCapabilities.maxTextureSize || '—'}`;
+$('#apply-gpu-recommendation').addEventListener('click', () => {
+    setControl('simulation-quality', gpuCapabilities.recommendedQuality, 'change');
+    toast(`Recommended ${gpuCapabilities.recommendedQuality.toUpperCase()} quality applied`);
+});
+
 function syncCameraUI() {
     const c = sketch.cameraControls;
     const pairs = [
@@ -355,7 +478,69 @@ function syncCameraUI() {
         if (document.activeElement !== input) input.value = label;
     });
     $('#auto-rotate').checked = Boolean(c.autoRotate);
+    if (document.activeElement !== $('#camera-movement')) $('#camera-movement').value = c.movementPreset || 'static';
+    if (document.activeElement !== $('#camera-smoothing')) $('#camera-smoothing').value = String(Math.round((c.smoothing || 0) * 100));
+    if (document.activeElement !== $('#camera-smoothing-value')) $('#camera-smoothing-value').value = String(Math.round((c.smoothing || 0) * 100));
 }
+
+/* -------------------------------------------------------------------------
+   Parameter locks — presets respect these controls.
+------------------------------------------------------------------------- */
+const LOCK_STORAGE_KEY = 'ferrofluid-parameter-locks-v1';
+const lockableIds = [
+    'viewport-preset', 'reactive-enabled', 'reaction-band', 'fft-size', 'sensitivity', 'smoothing', 'threshold',
+    'attack', 'release', 'transient-impact', 'curve-overall', 'curve-bass', 'curve-mids', 'curve-treble',
+    'region-mapping', 'region-strength', 'movement-mapping', 'bass-push', 'mid-rotation', 'treble-turbulence',
+    'base-zoom', 'spike-height', 'spike-sharpness', 'agitation', 'camera-pulse',
+    'mass', 'density', 'gas', 'viscosity', 'steps', 'pointer-radius', 'pointer-strength',
+    'camera-movement', 'yaw', 'elevation', 'distance', 'auto-rotate', 'rotate-speed', 'camera-smoothing',
+    'environment-preset', 'background-color', 'brightness', 'iridescence', 'roughness', 'metallic',
+    'reflection-intensity', 'fresnel-strength', 'environment-intensity', 'highlight-contrast',
+    'bloom-enabled', 'bloom-strength', 'bloom-threshold', 'bloom-radius'
+];
+try {
+    const storedLocks = JSON.parse(localStorage.getItem(LOCK_STORAGE_KEY) || '[]');
+    if (Array.isArray(storedLocks)) storedLocks.forEach((id) => lockedParameters.add(id));
+} catch (_) {}
+
+function saveLocks() {
+    try { localStorage.setItem(LOCK_STORAGE_KEY, JSON.stringify([...lockedParameters])); } catch (_) {}
+}
+
+function initializeParameterLocks() {
+    lockableIds.forEach((id) => {
+        const input = $(`#${id}`);
+        const control = input?.closest('.control');
+        if (!input || !control || control.querySelector(`.parameter-lock[data-lock-id="${id}"]`)) return;
+        control.classList.add('has-parameter-lock');
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'parameter-lock';
+        button.dataset.lockId = id;
+        button.title = `Lock ${control.querySelector('label')?.textContent?.trim() || id}`;
+        button.setAttribute('aria-label', button.title);
+        const update = () => {
+            const locked = lockedParameters.has(id);
+            button.classList.toggle('is-locked', locked);
+            button.textContent = locked ? '🔒' : '🔓';
+            button.setAttribute('aria-pressed', String(locked));
+        };
+        button.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (lockedParameters.has(id)) lockedParameters.delete(id); else lockedParameters.add(id);
+            saveLocks();
+            update();
+        });
+        const valueEditor = control.querySelector(':scope > .value-editor, :scope > .value-readout, :scope > .switch, :scope > input[type="color"]');
+        if (valueEditor) control.insertBefore(button, valueEditor);
+        else control.appendChild(button);
+        update();
+    });
+}
+
+function isParameterLocked(id) { return lockedParameters.has(id); }
+initializeParameterLocks();
 
 /* -------------------------------------------------------------------------
    Section reset controls
@@ -372,9 +557,7 @@ const sectionDefaults = {
         setControl('reactive-enabled', true, 'change');
         setControl('reaction-band', 'overall', 'change');
         setControl('fft-size', 2048, 'change');
-        setControl('sensitivity', 1.35);
-        setControl('smoothing', 0.72);
-        setControl('threshold', 0.025);
+        applyReactionPreset('balanced');
     },
     ferrofluid: () => {
         setControl('base-zoom', 0.5);
@@ -394,13 +577,26 @@ const sectionDefaults = {
     },
     camera: () => {
         sketch.resetCamera();
+        setControl('camera-movement', 'static', 'change');
         setControl('rotate-speed', 6);
+        setControl('camera-smoothing', 18);
         syncCameraUI();
     },
     appearance: () => {
-        setControl('background-color', '#050505');
+        setControl('environment-preset', 'black-studio', 'change');
+        setControl('background-color', '#050505', 'input');
         setControl('brightness', 1);
         setControl('iridescence', 1);
+        setControl('roughness', 1);
+        setControl('metallic', 1);
+        setControl('reflection-intensity', 1);
+        setControl('fresnel-strength', 1);
+        setControl('environment-intensity', 1);
+        setControl('highlight-contrast', 1);
+        setControl('bloom-enabled', false, 'change');
+        setControl('bloom-strength', 0.7);
+        setControl('bloom-threshold', 0.78);
+        setControl('bloom-radius', 1.2);
     },
     hud: () => {
         setControl('hud-enabled', true, 'change');
@@ -438,6 +634,133 @@ document.querySelectorAll('[data-reset-section]').forEach((button) => {
         toast(`${button.closest('.section')?.querySelector('h2')?.textContent || 'Section'} reset`);
     });
 });
+
+/* -------------------------------------------------------------------------
+   Local preset management
+------------------------------------------------------------------------- */
+const PRESET_STORAGE_KEY = 'ferrofluid-local-presets-v1';
+let presetStore = { presets: [], defaultId: null };
+
+function loadPresetStore() {
+    try {
+        const parsed = JSON.parse(localStorage.getItem(PRESET_STORAGE_KEY) || '{}');
+        if (Array.isArray(parsed.presets)) presetStore.presets = parsed.presets;
+        presetStore.defaultId = parsed.defaultId || null;
+    } catch (_) {}
+}
+function savePresetStore() {
+    try { localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify(presetStore)); } catch (_) {}
+}
+function refreshPresetSelect(selectedId = '') {
+    const select = $('#saved-preset');
+    select.innerHTML = '';
+    if (!presetStore.presets.length) {
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = 'No saved presets';
+        select.appendChild(option);
+        select.disabled = true;
+        ['preset-rename','preset-duplicate','preset-delete','preset-default'].forEach((id) => $(`#${id}`).disabled = true);
+        return;
+    }
+    select.disabled = false;
+    presetStore.presets.forEach((preset) => {
+        const option = document.createElement('option');
+        option.value = preset.id;
+        option.textContent = `${preset.name}${preset.id === presetStore.defaultId ? ' · DEFAULT' : ''}`;
+        select.appendChild(option);
+    });
+    const resolved = presetStore.presets.some((p) => p.id === selectedId) ? selectedId : presetStore.presets[0].id;
+    select.value = resolved;
+    ['preset-rename','preset-duplicate','preset-delete','preset-default'].forEach((id) => $(`#${id}`).disabled = false);
+}
+function getSelectedPreset() { return presetStore.presets.find((preset) => preset.id === $('#saved-preset').value) || null; }
+function clonePayload(payload) { return JSON.parse(JSON.stringify(payload)); }
+function applySavedPreset(preset) {
+    if (!preset?.payload) return;
+    previousPresetSnapshot = clonePayload(buildSettingsPayload());
+    applyImportedSettings(clonePayload(preset.payload), { respectLocks: true, silent: true });
+    currentPresetSnapshot = clonePayload(buildSettingsPayload());
+    $('#preset-compare').disabled = false;
+    toast(`Preset applied: ${preset.name}`);
+}
+
+$('#preset-save').addEventListener('click', () => {
+    const suggested = `Preset ${presetStore.presets.length + 1}`;
+    const name = window.prompt('Preset name:', suggested)?.trim();
+    if (!name) return;
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    presetStore.presets.push({ id, name, payload: clonePayload(buildSettingsPayload()) });
+    savePresetStore();
+    refreshPresetSelect(id);
+    toast('Preset saved');
+});
+$('#saved-preset').addEventListener('change', () => applySavedPreset(getSelectedPreset()));
+$('#preset-rename').addEventListener('click', () => {
+    const preset = getSelectedPreset();
+    if (!preset) return;
+    const name = window.prompt('Rename preset:', preset.name)?.trim();
+    if (!name) return;
+    preset.name = name;
+    savePresetStore();
+    refreshPresetSelect(preset.id);
+});
+$('#preset-duplicate').addEventListener('click', () => {
+    const preset = getSelectedPreset();
+    if (!preset) return;
+    const copy = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: `${preset.name} Copy`, payload: clonePayload(preset.payload) };
+    presetStore.presets.push(copy);
+    savePresetStore();
+    refreshPresetSelect(copy.id);
+    toast('Preset duplicated');
+});
+$('#preset-delete').addEventListener('click', () => {
+    const preset = getSelectedPreset();
+    if (!preset || !window.confirm(`Delete preset “${preset.name}”?`)) return;
+    presetStore.presets = presetStore.presets.filter((item) => item.id !== preset.id);
+    if (presetStore.defaultId === preset.id) presetStore.defaultId = null;
+    savePresetStore();
+    refreshPresetSelect();
+    $('#preset-compare').disabled = true;
+});
+$('#preset-default').addEventListener('click', () => {
+    const preset = getSelectedPreset();
+    if (!preset) return;
+    presetStore.defaultId = preset.id;
+    savePresetStore();
+    refreshPresetSelect(preset.id);
+    toast('Default preset set');
+});
+
+let compareHeld = false;
+function beginPresetCompare(event) {
+    if (!previousPresetSnapshot || !currentPresetSnapshot) return;
+    event.preventDefault();
+    compareHeld = true;
+    applyImportedSettings(clonePayload(previousPresetSnapshot), { respectLocks: false, silent: true });
+}
+function endPresetCompare() {
+    if (!compareHeld || !currentPresetSnapshot) return;
+    compareHeld = false;
+    applyImportedSettings(clonePayload(currentPresetSnapshot), { respectLocks: false, silent: true });
+}
+$('#preset-compare').addEventListener('pointerdown', beginPresetCompare);
+window.addEventListener('pointerup', endPresetCompare);
+$('#preset-compare').addEventListener('pointerleave', endPresetCompare);
+$('#preset-compare').addEventListener('keydown', (event) => { if (event.code === 'Space' || event.code === 'Enter') beginPresetCompare(event); });
+$('#preset-compare').addEventListener('keyup', endPresetCompare);
+
+$('#reset-all').addEventListener('click', () => {
+    ['playback','viewport','audio','ferrofluid','simulation','camera','appearance','performance','hud','export'].forEach((key) => sectionDefaults[key]?.());
+    toast('All controls reset');
+});
+
+loadPresetStore();
+refreshPresetSelect(presetStore.defaultId || '');
+if (presetStore.defaultId) {
+    const defaultPreset = presetStore.presets.find((preset) => preset.id === presetStore.defaultId);
+    if (defaultPreset) requestAnimationFrame(() => applyImportedSettings(clonePayload(defaultPreset.payload), { respectLocks: true, silent: true }));
+}
 
 /* -------------------------------------------------------------------------
    Export — options mirror boid-vis-main(1).zip
@@ -685,6 +1008,7 @@ async function exportVideo() {
     const endTime = range.end;
     const exportDuration = range.duration;
     const fps = Number($('#video-frame-rate').value) || 60;
+    const frameDurationMs = 1000 / fps;
     const bitrate = (Number($('#video-bitrate').value) || 24) * 1_000_000;
     const resolution = getExportResolution();
     const totalFrames = Math.max(1, Math.ceil(exportDuration * fps));
@@ -693,11 +1017,13 @@ async function exportVideo() {
 
     setStatus('Exporting video', 'busy');
     setExportUiActive(true);
-    setExportStatus(`Preparing ${fileType.toUpperCase()} encoder · ${fps} FPS · ${(bitrate / 1_000_000).toFixed(0)} Mbps…`, 'active');
-    setExportProgress(true, 0.01, 'Preparing', { duration: exportDuration, totalFrames });
+    setExportStatus(`Preparing deterministic ${fileType.toUpperCase()} export · ${fps} FPS · ${(bitrate / 1_000_000).toFixed(0)} Mbps…`, 'active');
+    setExportProgress(true, 0.01, 'Analyzing audio', { duration: exportDuration, totalFrames });
 
     let canvasStream = null;
+    let manualFrames = false;
     try {
+        const deterministicReader = await audioControl.createDeterministicAnalysisReader();
         audioControl.pause();
         audioControl.useFileInput();
         audioControl.setLoop(false);
@@ -709,18 +1035,29 @@ async function exportVideo() {
         await nextFrames(2);
 
         const exportCanvas = compositeExportFrame(resolution.width, resolution.height);
-        startExportCompositeLoop(resolution.width, resolution.height);
-        canvasStream = exportCanvas.captureStream(fps);
+        try {
+            canvasStream = exportCanvas.captureStream(0);
+        } catch (_) {
+            canvasStream = exportCanvas.captureStream(fps);
+        }
+        let videoTrack = canvasStream.getVideoTracks()[0] || null;
+        manualFrames = Boolean(videoTrack?.requestFrame);
+        if (!manualFrames) {
+            canvasStream.getTracks().forEach((track) => track.stop());
+            canvasStream = exportCanvas.captureStream(fps);
+            videoTrack = canvasStream.getVideoTracks()[0] || null;
+            startExportCompositeLoop(resolution.width, resolution.height);
+        } else {
+            sketch.setManualFrameMode(true);
+        }
+
         const audioStream = audioControl.getCaptureStream();
         const tracks = [...canvasStream.getVideoTracks(), ...(audioStream ? audioStream.getAudioTracks() : [])];
         const combinedStream = new MediaStream(tracks);
         const chunks = [];
         const recorder = new MediaRecorder(combinedStream, { mimeType, videoBitsPerSecond: bitrate });
         activeRecorder = recorder;
-
-        recorder.addEventListener('dataavailable', (event) => {
-            if (event.data?.size) chunks.push(event.data);
-        });
+        recorder.addEventListener('dataavailable', (event) => { if (event.data?.size) chunks.push(event.data); });
         const stopped = new Promise((resolve, reject) => {
             recorder.addEventListener('stop', resolve, { once: true });
             recorder.addEventListener('error', (event) => reject(event.error || new Error('Recording failed')), { once: true });
@@ -728,26 +1065,51 @@ async function exportVideo() {
 
         recorder.start(1000);
         await audioControl.play();
-        setExportStatus(`Recording ${fileType.toUpperCase()}…`, 'active');
+        const exportWallStart = performance.now();
+        setExportStatus(manualFrames ? `Encoding fixed-step ${fileType.toUpperCase()} frames…` : `Recording ${fileType.toUpperCase()} compatibility mode…`, 'active');
 
-        await new Promise((resolve) => {
-            const check = () => {
-                const progress = clamp((audioControl.currentTime - startTime) / exportDuration, 0, 1);
-                const elapsed = (performance.now() - startedAt) / 1000;
-                setExportProgress(true, Math.max(0.01, progress * 0.97), cancelRequested ? 'Cancelling' : 'Encoding frames', {
-                    elapsed,
+        if (manualFrames) {
+            for (let frame = 0; frame < totalFrames && !cancelRequested; frame++) {
+                const targetWall = exportWallStart + frame * frameDurationMs;
+                let remaining = targetWall - performance.now();
+                while (remaining > 1.5 && !cancelRequested) {
+                    await new Promise((resolve) => setTimeout(resolve, Math.min(8, Math.max(1, remaining - 0.5))));
+                    remaining = targetWall - performance.now();
+                }
+                if (cancelRequested) break;
+                const analysisTime = Math.min(endTime, startTime + frame / fps);
+                const analysis = deterministicReader ? deterministicReader(analysisTime) : audioControl.getAnalysis();
+                sketch.renderDeterministicFrame(frameDurationMs, analysis);
+                compositeExportFrame(resolution.width, resolution.height);
+                videoTrack.requestFrame();
+                const progress = clamp((frame + 1) / totalFrames, 0, 1);
+                setExportProgress(true, Math.max(0.01, progress * 0.97), 'Encoding fixed-step frames', {
+                    elapsed: (performance.now() - startedAt) / 1000,
                     duration: exportDuration,
-                    frame: Math.round(progress * totalFrames),
+                    frame: frame + 1,
                     totalFrames,
                 });
-                if (cancelRequested || audioControl.currentTime >= endTime - 0.025 || audioControl.audioElement.ended) {
-                    resolve();
-                    return;
-                }
+            }
+            const finishAt = exportWallStart + exportDuration * 1000;
+            while (!cancelRequested && performance.now() < finishAt - 1) {
+                await new Promise((resolve) => setTimeout(resolve, Math.min(8, finishAt - performance.now())));
+            }
+        } else {
+            await new Promise((resolve) => {
+                const check = () => {
+                    const progress = clamp((audioControl.currentTime - startTime) / exportDuration, 0, 1);
+                    setExportProgress(true, Math.max(0.01, progress * 0.97), cancelRequested ? 'Cancelling' : 'Encoding frames', {
+                        elapsed: (performance.now() - startedAt) / 1000,
+                        duration: exportDuration,
+                        frame: Math.round(progress * totalFrames),
+                        totalFrames,
+                    });
+                    if (cancelRequested || audioControl.currentTime >= endTime - 0.025 || audioControl.audioElement.ended) return resolve();
+                    requestAnimationFrame(check);
+                };
                 requestAnimationFrame(check);
-            };
-            requestAnimationFrame(check);
-        });
+            });
+        }
 
         audioControl.pause();
         if (recorder.state !== 'inactive') recorder.stop();
@@ -768,7 +1130,7 @@ async function exportVideo() {
                 frame: totalFrames,
                 totalFrames,
             });
-            setExportStatus(`${fileType.toUpperCase()} exported · ${resolution.width}×${resolution.height} · ${formatBytes(blob.size)}`, 'done');
+            setExportStatus(`${fileType.toUpperCase()} exported · ${resolution.width}×${resolution.height} · ${formatBytes(blob.size)}${manualFrames ? ' · fixed-step' : ''}`, 'done');
             toast('Video export complete');
         } else {
             setExportStatus('Video export cancelled.', 'idle');
@@ -781,6 +1143,7 @@ async function exportVideo() {
         setStatus('Export failed', 'error');
     } finally {
         stopExportCompositeLoop();
+        sketch.setManualFrameMode(false);
         activeRecorder = null;
         canvasStream?.getTracks().forEach((track) => track.stop());
         sketch.setExportMode(false);
@@ -838,6 +1201,8 @@ function buildSettingsPayload() {
             sensitivity: audioControl.sensitivity,
             smoothing: audioControl.smoothing,
             threshold: audioControl.threshold,
+            ...audioControl.getSerializableAnalysisSettings(),
+            reactionPreset: $('#reaction-preset').value,
             volume: Number($('#volume').value),
             muted: $('#mute-audio').checked,
             loop: loopController.getState(),
@@ -861,10 +1226,15 @@ $('#export-json').addEventListener('click', () => {
     toast('Settings JSON exported');
 });
 
-function applyImportedSettings(payload) {
+function applyImportedSettings(payload, options = {}) {
     if (!payload || payload.schemaVersion !== 1 || payload.app !== 'ferrofluid-audio-reactive') {
         throw new Error('Incompatible settings file.');
     }
+    const respectLocks = Boolean(options.respectLocks);
+    const apply = (id, value, eventName = 'input') => {
+        if (value == null || (respectLocks && isParameterLocked(id))) return;
+        setControl(id, value, eventName);
+    };
     const settings = payload.settings || {};
     const reactive = settings.audioReactive || {};
     const simulation = settings.simulation || {};
@@ -876,28 +1246,52 @@ function applyImportedSettings(payload) {
     const exportSettings = payload.export || {};
     const hud = payload.hud || {};
 
-    if (settings.baseZoom != null) setControl('base-zoom', settings.baseZoom);
-    if (reactive.enabled != null) setControl('reactive-enabled', reactive.enabled, 'change');
-    if (reactive.band) setControl('reaction-band', reactive.band, 'change');
-    if (reactive.spikeHeight != null) setControl('spike-height', reactive.spikeHeight);
-    if (reactive.spikeSharpness != null) setControl('spike-sharpness', reactive.spikeSharpness);
-    if (reactive.agitation != null) setControl('agitation', reactive.agitation);
-    if (reactive.cameraZoom != null) setControl('camera-pulse', reactive.cameraZoom);
-    if (simulation.MASS != null) setControl('mass', simulation.MASS);
-    if (simulation.REST_DENS != null) setControl('density', simulation.REST_DENS);
-    if (simulation.GAS_CONST != null) setControl('gas', simulation.GAS_CONST);
-    if (simulation.VISC != null) setControl('viscosity', simulation.VISC);
-    if (simulation.STEPS != null) setControl('steps', simulation.STEPS);
-    if (pointer.RADIUS != null) setControl('pointer-radius', pointer.RADIUS);
-    if (pointer.STRENGTH != null) setControl('pointer-strength', pointer.STRENGTH);
-    if (camera.yaw != null) setControl('yaw', camera.yaw);
-    if (camera.elevation != null) setControl('elevation', camera.elevation);
-    if (camera.distance != null) setControl('distance', camera.distance);
-    if (camera.autoRotate != null) setControl('auto-rotate', camera.autoRotate, 'change');
-    if (camera.rotateSpeed != null) setControl('rotate-speed', camera.rotateSpeed);
-    if (appearance.backgroundColor) setControl('background-color', appearance.backgroundColor);
-    if (appearance.materialBrightness != null) setControl('brightness', appearance.materialBrightness);
-    if (appearance.iridescence != null) setControl('iridescence', appearance.iridescence);
+    apply('base-zoom', settings.baseZoom);
+    apply('reactive-enabled', reactive.enabled, 'change');
+    apply('reaction-band', reactive.band, 'change');
+    apply('spike-height', reactive.spikeHeight);
+    apply('spike-sharpness', reactive.spikeSharpness);
+    apply('agitation', reactive.agitation);
+    apply('camera-pulse', reactive.cameraZoom);
+    apply('transient-impact', reactive.transientImpact ?? audio.transientImpact);
+    apply('region-mapping', reactive.regionMapping, 'change');
+    apply('region-strength', reactive.regionStrength);
+    apply('movement-mapping', reactive.movementMapping, 'change');
+    apply('bass-push', reactive.bassPush);
+    apply('mid-rotation', reactive.midRotation);
+    apply('treble-turbulence', reactive.trebleTurbulence);
+
+    apply('mass', simulation.MASS);
+    apply('density', simulation.REST_DENS);
+    apply('gas', simulation.GAS_CONST);
+    apply('viscosity', simulation.VISC);
+    apply('steps', simulation.STEPS);
+    apply('pointer-radius', pointer.RADIUS);
+    apply('pointer-strength', pointer.STRENGTH);
+
+    apply('camera-movement', camera.movementPreset, 'change');
+    apply('yaw', camera.targetYaw ?? camera.yaw);
+    apply('elevation', camera.targetElevation ?? camera.elevation);
+    apply('distance', camera.targetDistance ?? camera.distance);
+    apply('auto-rotate', camera.autoRotate, 'change');
+    apply('rotate-speed', camera.rotateSpeed);
+    if (camera.smoothing != null) apply('camera-smoothing', camera.smoothing * 100);
+
+    apply('environment-preset', appearance.environmentPreset, 'change');
+    apply('background-color', appearance.backgroundColor, 'input');
+    apply('brightness', appearance.materialBrightness);
+    apply('iridescence', appearance.iridescence);
+    apply('roughness', appearance.roughness);
+    apply('metallic', appearance.metallic);
+    apply('reflection-intensity', appearance.reflectionIntensity);
+    apply('fresnel-strength', appearance.fresnelStrength);
+    apply('environment-intensity', appearance.environmentIntensity);
+    apply('highlight-contrast', appearance.highlightContrast);
+    apply('bloom-enabled', appearance.bloomEnabled, 'change');
+    apply('bloom-strength', appearance.bloomStrength);
+    apply('bloom-threshold', appearance.bloomThreshold);
+    apply('bloom-radius', appearance.bloomRadius);
+
     if (Object.keys(performanceSettings).length) {
         const importedMode = performanceSettings.mode || 'auto';
         setControl('performance-mode', 'manual', 'change');
@@ -908,16 +1302,24 @@ function applyImportedSettings(payload) {
         if (performanceSettings.showStats != null) setControl('show-performance-stats', performanceSettings.showStats, 'change');
         setControl('performance-mode', importedMode, 'change');
     }
-    if (audio.fftSize != null) setControl('fft-size', audio.fftSize, 'change');
-    if (audio.sensitivity != null) setControl('sensitivity', audio.sensitivity);
-    if (audio.smoothing != null) setControl('smoothing', audio.smoothing);
-    if (audio.threshold != null) setControl('threshold', audio.threshold);
+
+    apply('fft-size', audio.fftSize, 'change');
+    apply('sensitivity', audio.sensitivity);
+    apply('smoothing', audio.smoothing);
+    apply('threshold', audio.threshold);
+    apply('attack', audio.attackMs);
+    apply('release', audio.releaseMs);
+    if (audio.responseCurves) {
+        ['overall','bass','mids','treble'].forEach((key) => apply(`curve-${key}`, audio.responseCurves[key], 'change'));
+    }
+    if (audio.reactionPreset && $('#reaction-preset')) $('#reaction-preset').value = audio.reactionPreset;
     if (audio.volume != null) setControl('volume', audio.volume);
     if (audio.muted != null) setControl('mute-audio', audio.muted, 'change');
+
     if (hud.hudEnabled != null) setControl('hud-enabled', hud.hudEnabled, 'change');
     if (hud.hudOpacity != null) setControl('hud-opacity', hud.hudOpacity);
     if (hud.hudScale != null) setControl('hud-scale', hud.hudScale);
-    if (payload.viewport) setControl('viewport-preset', payload.viewport, 'change');
+    apply('viewport-preset', payload.viewport, 'change');
     if (exportSettings.fileType) setControl('video-file-type', exportSettings.fileType, 'change');
     if (exportSettings.resolution) setControl('export-resolution', exportSettings.resolution, 'change');
     if (exportSettings.frameRate != null) setControl('video-frame-rate', exportSettings.frameRate, 'change');
@@ -989,7 +1391,7 @@ function updateUI(time) {
         ['bass', 'mids', 'treble', 'overall'].forEach((key) => {
             $(`#meter-${key}`).style.width = `${clamp(levels[key] || 0, 0, 1) * 100}%`;
         });
-        if (sketch.cameraControls.autoRotate || sketch.isOrbiting) syncCameraUI();
+        syncCameraUI();
         hudController.renderPreview();
     }
 

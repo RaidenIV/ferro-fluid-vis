@@ -20,10 +20,19 @@ export class AudioControl {
         this.sensitivity = 1.35;
         this.smoothing = 0.72;
         this.threshold = 0.025;
+        this.responseCurves = { overall: 'linear', bass: 'linear', mids: 'linear', treble: 'linear' };
+        this.attackMs = 22;
+        this.releaseMs = 180;
+        this.transientImpact = 0.35;
         this.smoothed = { overall: 0, bass: 0, mids: 0, treble: 0 };
+        this.transientEnvelope = 0;
+        this.transientBaseline = 0;
+        this.lastAnalysisTime = performance.now();
+        this.offlineEnvelope = null;
+        this.offlineEnvelopePromise = null;
         // Reused analysis frame and precomputed FFT band ranges avoid per-frame
         // object/function allocation in the render loop.
-        this.analysisFrame = { overall: 0, bass: 0, mids: 0, treble: 0 };
+        this.analysisFrame = { overall: 0, bass: 0, mids: 0, treble: 0, transient: 0 };
         this.bandRanges = { overall: [0, 0], bass: [0, 0], mids: [0, 0], treble: [0, 0] };
         this.monitorVolume = 0.85;
         this.monitorMuted = false;
@@ -117,12 +126,37 @@ export class AudioControl {
         return count ? Math.sqrt(sumSq / count) : 0;
     }
 
+    #applyResponseCurve(value, curve) {
+        const x = clamp(value, 0, 1);
+        switch (curve) {
+            case 'smooth': return x * x * (3 - 2 * x);
+            case 'punchy': return clamp(Math.pow(Math.max(0, (x - 0.06) / 0.94), 0.68), 0, 1);
+            case 'exponential': return x * x;
+            default: return x;
+        }
+    }
+
     #smoothBand(key, rawValue) {
         const gated = Math.max(0, rawValue - this.threshold) / Math.max(0.001, 1 - this.threshold);
         const boosted = clamp(gated * this.sensitivity, 0, 1);
+        const curved = this.#applyResponseCurve(boosted, this.responseCurves[key]);
         const alpha = 1 - this.smoothing;
-        this.smoothed[key] += (boosted - this.smoothed[key]) * alpha;
+        this.smoothed[key] += (curved - this.smoothed[key]) * alpha;
         this.analysisFrame[key] = this.smoothed[key];
+        return curved;
+    }
+
+    #updateTransient(overallValue) {
+        const now = performance.now();
+        const dt = Math.max(1, Math.min(100, now - this.lastAnalysisTime));
+        this.lastAnalysisTime = now;
+        const baselineRate = 1 - Math.exp(-dt / Math.max(40, this.releaseMs * 1.8));
+        this.transientBaseline += (overallValue - this.transientBaseline) * baselineRate;
+        const onset = Math.max(0, overallValue - this.transientBaseline);
+        const timeConstant = onset > this.transientEnvelope ? this.attackMs : this.releaseMs;
+        const rate = 1 - Math.exp(-dt / Math.max(1, timeConstant));
+        this.transientEnvelope += (onset - this.transientEnvelope) * rate;
+        this.analysisFrame.transient = clamp(this.transientEnvelope * 3.2, 0, 1);
     }
 
     setFFTSize(size) {
@@ -142,6 +176,24 @@ export class AudioControl {
         this.threshold = clamp(Number(value), 0, 0.5);
     }
 
+    setResponseCurve(key, curve) {
+        if (!(key in this.responseCurves)) return;
+        if (!['linear', 'smooth', 'punchy', 'exponential'].includes(curve)) return;
+        this.responseCurves[key] = curve;
+    }
+
+    setAttack(value) {
+        this.attackMs = clamp(Number(value), 1, 500);
+    }
+
+    setRelease(value) {
+        this.releaseMs = clamp(Number(value), 20, 1500);
+    }
+
+    setTransientImpact(value) {
+        this.transientImpact = clamp(Number(value), 0, 2);
+    }
+
     async loadFile(file) {
         if (!file) return;
         await this.ensureContext();
@@ -154,6 +206,8 @@ export class AudioControl {
         this.fileName = file.name;
         this.isFileLoaded = true;
         this.decodedAudioBuffer = null;
+        this.offlineEnvelope = null;
+        this.offlineEnvelopePromise = null;
         this.#useAnalysisSource(this.mediaElementSource);
 
         const metadataReady = new Promise((resolve, reject) => {
@@ -179,6 +233,8 @@ export class AudioControl {
 
         const [, decoded] = await Promise.all([metadataReady, decodeReady]);
         this.decodedAudioBuffer = decoded;
+        // Start deterministic envelope preparation without blocking playback.
+        this.prepareDeterministicAnalysis().catch(() => {});
     }
 
     useFileInput() {
@@ -258,6 +314,7 @@ export class AudioControl {
             this.analysisFrame.bass = 0;
             this.analysisFrame.mids = 0;
             this.analysisFrame.treble = 0;
+            this.analysisFrame.transient = 0;
             return this.analysisFrame;
         }
 
@@ -272,10 +329,11 @@ export class AudioControl {
         const rms = Math.sqrt(timeSumSq / this.timeData.length);
 
         const overall = Math.max(rms * 1.8, this.#bandRms(this.bandRanges.overall) * 0.82);
-        this.#smoothBand('overall', overall);
+        const curvedOverall = this.#smoothBand('overall', overall);
         this.#smoothBand('bass', this.#bandRms(this.bandRanges.bass));
         this.#smoothBand('mids', this.#bandRms(this.bandRanges.mids));
         this.#smoothBand('treble', this.#bandRms(this.bandRanges.treble));
+        this.#updateTransient(curvedOverall);
 
         if (this.isDev) this.visualize();
         return this.analysisFrame;
@@ -284,6 +342,163 @@ export class AudioControl {
     // Compatibility with the original sketch API.
     getValue() {
         return this.getAnalysis().overall;
+    }
+
+    async prepareDeterministicAnalysis() {
+        if (this.offlineEnvelope) return this.offlineEnvelope;
+        if (this.offlineEnvelopePromise) return this.offlineEnvelopePromise;
+        const buffer = this.decodedAudioBuffer;
+        if (!buffer) return null;
+
+        this.offlineEnvelopePromise = (async () => {
+            const sampleRate = buffer.sampleRate;
+            const hop = Math.max(64, Math.round(sampleRate / 120));
+            const frameCount = Math.ceil(buffer.length / hop);
+            const overall = new Float32Array(frameCount);
+            const bass = new Float32Array(frameCount);
+            const mids = new Float32Array(frameCount);
+            const treble = new Float32Array(frameCount);
+            const channels = Array.from({ length: buffer.numberOfChannels }, (_, i) => buffer.getChannelData(i));
+            const invChannels = 1 / Math.max(1, channels.length);
+            const aBass = 1 - Math.exp(-2 * Math.PI * 250 / sampleRate);
+            const aMids = 1 - Math.exp(-2 * Math.PI * 2200 / sampleRate);
+            let lpBass = 0;
+            let lpMids = 0;
+            let sums = [0, 0, 0, 0];
+            let samples = 0;
+            let frame = 0;
+            let maxOverall = 1e-6;
+            let maxBass = 1e-6;
+            let maxMids = 1e-6;
+            let maxTreble = 1e-6;
+
+            for (let i = 0; i < buffer.length; i++) {
+                let x = 0;
+                for (let c = 0; c < channels.length; c++) x += channels[c][i] || 0;
+                x *= invChannels;
+                lpBass += aBass * (x - lpBass);
+                lpMids += aMids * (x - lpMids);
+                const b = lpBass;
+                const m = lpMids - lpBass;
+                const t = x - lpMids;
+                sums[0] += x * x;
+                sums[1] += b * b;
+                sums[2] += m * m;
+                sums[3] += t * t;
+                samples++;
+                if (samples >= hop || i === buffer.length - 1) {
+                    const inv = 1 / Math.max(1, samples);
+                    const o = Math.sqrt(sums[0] * inv);
+                    const bv = Math.sqrt(sums[1] * inv);
+                    const mv = Math.sqrt(sums[2] * inv);
+                    const tv = Math.sqrt(sums[3] * inv);
+                    overall[frame] = o; bass[frame] = bv; mids[frame] = mv; treble[frame] = tv;
+                    maxOverall = Math.max(maxOverall, o); maxBass = Math.max(maxBass, bv);
+                    maxMids = Math.max(maxMids, mv); maxTreble = Math.max(maxTreble, tv);
+                    frame++;
+                    sums = [0, 0, 0, 0];
+                    samples = 0;
+                }
+                if (i > 0 && i % 2000000 === 0) await new Promise(requestAnimationFrame);
+            }
+
+            // Normalize conservatively so offline export tracks the same 0..1 scale
+            // as the live analyser without forcing every track to peak at 1.
+            const normalize = (array, peak, gain) => {
+                const scale = Math.min(gain, gain / Math.max(0.18, peak));
+                for (let i = 0; i < array.length; i++) array[i] = clamp(array[i] * scale, 0, 1);
+            };
+            normalize(overall, maxOverall, 2.4);
+            normalize(bass, maxBass, 4.0);
+            normalize(mids, maxMids, 4.0);
+            normalize(treble, maxTreble, 4.0);
+
+            const transientTimes = [];
+            let baseline = 0;
+            let lastTransientTime = -1;
+            for (let i = 0; i < overall.length; i++) {
+                baseline += (overall[i] - baseline) * 0.025;
+                const onset = overall[i] - baseline;
+                const time = i / 120;
+                if (onset > 0.085 && time - lastTransientTime > 0.08) {
+                    transientTimes.push(time);
+                    lastTransientTime = time;
+                }
+            }
+
+            this.offlineEnvelope = { rate: 120, overall, bass, mids, treble, transientTimes };
+            return this.offlineEnvelope;
+        })().finally(() => { this.offlineEnvelopePromise = null; });
+        return this.offlineEnvelopePromise;
+    }
+
+    async createDeterministicAnalysisReader() {
+        const envelope = await this.prepareDeterministicAnalysis();
+        if (!envelope) return null;
+        const state = {
+            smoothed: { overall: 0, bass: 0, mids: 0, treble: 0 },
+            baseline: 0,
+            transient: 0,
+            lastIndex: -1,
+            frame: { overall: 0, bass: 0, mids: 0, treble: 0, transient: 0 },
+        };
+        const keys = ['overall', 'bass', 'mids', 'treble'];
+        const sampleDt = 1000 / envelope.rate;
+        const resetState = () => {
+            state.smoothed.overall = 0;
+            state.smoothed.bass = 0;
+            state.smoothed.mids = 0;
+            state.smoothed.treble = 0;
+            state.baseline = 0;
+            state.transient = 0;
+            state.lastIndex = -1;
+        };
+        const processIndex = (index) => {
+            let curvedOverall = 0;
+            for (const key of keys) {
+                const raw = envelope[key][index] || 0;
+                const gated = Math.max(0, raw - this.threshold) / Math.max(0.001, 1 - this.threshold);
+                const boosted = clamp(gated * this.sensitivity, 0, 1);
+                const curved = this.#applyResponseCurve(boosted, this.responseCurves[key]);
+                const smoothAlpha = 1 - Math.pow(this.smoothing, Math.max(0.25, sampleDt / 16.667));
+                state.smoothed[key] += (curved - state.smoothed[key]) * smoothAlpha;
+                state.frame[key] = state.smoothed[key];
+                if (key === 'overall') curvedOverall = curved;
+            }
+            const baselineRate = 1 - Math.exp(-sampleDt / Math.max(40, this.releaseMs * 1.8));
+            state.baseline += (curvedOverall - state.baseline) * baselineRate;
+            const onset = Math.max(0, curvedOverall - state.baseline);
+            const tc = onset > state.transient ? this.attackMs : this.releaseMs;
+            const tr = 1 - Math.exp(-sampleDt / Math.max(1, tc));
+            state.transient += (onset - state.transient) * tr;
+            state.frame.transient = clamp(state.transient * 3.2, 0, 1);
+        };
+
+        return (timeSeconds) => {
+            const targetIndex = clamp(Math.round(timeSeconds * envelope.rate), 0, envelope.overall.length - 1);
+            // The envelope is processed sequentially rather than sampling only the
+            // requested bin. This warms the attack/release/smoothing state from the
+            // start of the track, so a loop exported from the middle of a song gets
+            // the same deterministic analysis history every time.
+            if (targetIndex < state.lastIndex) resetState();
+            for (let index = state.lastIndex + 1; index <= targetIndex; index++) processIndex(index);
+            state.lastIndex = targetIndex;
+            return state.frame;
+        };
+    }
+
+    async getTransientTimes() {
+        const envelope = await this.prepareDeterministicAnalysis();
+        return envelope?.transientTimes ? [...envelope.transientTimes] : [];
+    }
+
+    getSerializableAnalysisSettings() {
+        return {
+            responseCurves: { ...this.responseCurves },
+            attackMs: this.attackMs,
+            releaseMs: this.releaseMs,
+            transientImpact: this.transientImpact,
+        };
     }
 
     visualize() {

@@ -267,3 +267,17 @@
     .loop-ctrl-block + .loop-ctrl-block { border-left: none; border-top: 1px solid rgba(255,255,255,0.06); }
     .loop-bpm-block { align-items: flex-start; }
 }
+
+.loop-snap-block { min-width: 150px; }
+.loop-snap-select {
+  width: 100%;
+  margin-top: 8px;
+  padding: 7px 28px 7px 8px;
+  border: 1px solid rgba(255,255,255,.14);
+  border-radius: 5px;
+  background: #101010;
+  color: #e8e8e8;
+  font: 600 11px/1.2 Rajdhani, sans-serif;
+  outline: none;
+}
+.loop-snap-select:focus { border-color: rgba(255,42,26,.65); }

@@ -12,6 +12,7 @@ export function createLoopController(audioControl) {
     loopBpm: 120,
     loopBars: 4,
     loopSnap: true,
+    loopSnapMode: 'beat',
     loopStart: 0,
     loopEnd: 0,
     loopReady: false,
@@ -150,6 +151,8 @@ const galaxyLoopController = (() => {
   let popupAnimRaf   = null;
   let popupResizeObs = null;
   let popupForceRestartFromLoopStart = true;
+  let popupSnapMode = 'beat';
+  let popupTransientTimes = [];
   let popupDocMouseMoveHandler = null;
   let popupDocMouseUpHandler = null;
   let popupDocKeydownHandler = null;
@@ -170,6 +173,7 @@ const galaxyLoopController = (() => {
       popupMuted = Boolean(state.muted);
       popupBpm = clamp(state.loopBpm || 120, 40, 300);
       popupLoopBars = Math.max(1, Math.round(state.loopBars || 4));
+      popupSnapMode = state.loopSnapMode || (state.loopSnap ? 'beat' : 'off');
 
       if (audio) {
           try { audio.pause(); } catch (_) {}
@@ -196,6 +200,7 @@ const galaxyLoopController = (() => {
       refreshVolSlider(popupQuery);
       updateVolIcon(popupQuery);
       popupQuery("popup-bars-val").value = String(popupLoopBars);
+      popupQuery("popup-snap-mode").value = popupSnapMode;
 
       // Load and decode audio from state
       initPopupAudio(state.decodedAudioBuffer);
@@ -298,6 +303,17 @@ const galaxyLoopController = (() => {
         </div>
         <div class="loop-time-info" id="popup-loop-time-info">—</div>
       </div>
+
+      <div class="loop-ctrl-block loop-snap-block">
+        <div class="loop-section-label">Boundary Snap</div>
+        <select class="loop-snap-select" id="popup-snap-mode">
+          <option value="off">Off</option>
+          <option value="beat" selected>Beat</option>
+          <option value="bar">Bar</option>
+          <option value="transient">Detected Transient</option>
+        </select>
+        <div class="loop-bpm-hint">Applies while dragging the loop region.</div>
+      </div>
     </div>
 
     <div class="loop-status-bar">
@@ -384,6 +400,10 @@ const galaxyLoopController = (() => {
           popupLoopBars = Math.min(maxBars, popupLoopBars + 1);
           $('popup-bars-val').value = popupLoopBars;
           applyLoopChange($);
+      });
+      $('popup-snap-mode').addEventListener('change', () => {
+          popupSnapMode = $('popup-snap-mode').value;
+          renderWaveform($);
       });
 
       // Zoom
@@ -538,6 +558,11 @@ const galaxyLoopController = (() => {
 
       try {
           popupBuffer = buffer;
+          popupTransientTimes = [];
+          audioControl.getTransientTimes().then((times) => {
+              if (!popupOpen || popupBuffer !== buffer) return;
+              popupTransientTimes = Array.isArray(times) ? times : [];
+          }).catch(() => {});
 
           // Start with a usable BPM immediately. The already-computed host
           // analysis is a reliable fallback if OfflineAudioContext analysis is
@@ -777,6 +802,27 @@ const galaxyLoopController = (() => {
       e.preventDefault(); e.stopPropagation();
   }
 
+  function snapBoundaryTime(value) {
+      if (!popupBuffer || popupSnapMode === 'off') return value;
+      const beat = popupBpm > 0 ? 60 / popupBpm : 0;
+      if (popupSnapMode === 'beat' && beat > 0) return Math.round(value / beat) * beat;
+      if (popupSnapMode === 'bar' && beat > 0) {
+          const bar = beat * 4;
+          return Math.round(value / bar) * bar;
+      }
+      if (popupSnapMode === 'transient' && popupTransientTimes.length) {
+          let nearest = popupTransientTimes[0];
+          let best = Math.abs(nearest - value);
+          for (let i = 1; i < popupTransientTimes.length; i++) {
+              const d = Math.abs(popupTransientTimes[i] - value);
+              if (d < best) { best = d; nearest = popupTransientTimes[i]; }
+              if (popupTransientTimes[i] > value && d > best) break;
+          }
+          return nearest;
+      }
+      return value;
+  }
+
   function onMouseMove(e, $) {
       if (mmDrag && popupBuffer) {
           const dx = e.clientX - mmX0, dur = popupBuffer.duration;
@@ -795,10 +841,8 @@ const galaxyLoopController = (() => {
       if (!wWrap) return;
       const rect = wWrap.getBoundingClientRect();
       const dt = ((cx - dragX0) / rect.width) * (popupZoomEnd - popupZoomStart);
-      const beat = popupBpm > 0 ? 60 / popupBpm : 0;
       const loopDuration = Math.max(0, dragLoopDuration || (popupLoopEnd - popupLoopStart));
-      let ns = dragLoopStart0 + dt;
-      if (beat > 0) ns = Math.round(ns / beat) * beat;
+      let ns = snapBoundaryTime(dragLoopStart0 + dt);
       const maxStart = Math.max(0, popupBuffer.duration - loopDuration);
       ns = Math.max(0, Math.min(ns, maxStart));
       popupLoopStart = ns;
@@ -1047,7 +1091,8 @@ const galaxyLoopController = (() => {
       state.loopEnd = clamp(Number(end) || duration, state.loopStart, duration);
       state.loopBpm = clamp(Number(popupBpm) || state.loopBpm || 120, 40, 300);
       state.loopBars = Math.max(1, Math.round(Number(popupLoopBars) || 1));
-      state.loopSnap = true;
+      state.loopSnapMode = popupSnapMode;
+      state.loopSnap = popupSnapMode !== 'off';
       state.audioLoop = state.loopEnd > state.loopStart;
       updateAudioLoopMode();
       updateLoopSelectionUi();
@@ -1107,6 +1152,7 @@ const galaxyLoopController = (() => {
     state.loopBpm = 120;
     state.loopBars = 4;
     state.loopSnap = true;
+    state.loopSnapMode = 'beat';
     state.loopStart = 0;
     state.loopEnd = duration;
     state.loopReady = state.hasAudio;

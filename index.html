@@ -106,6 +106,7 @@
               </select>
               <div class="control-hint">Frames the live visualization to the selected aspect ratio.</div>
             </div>
+            <button id="presentation-mode" class="secondary" type="button">Presentation Mode</button>
           </div>
         </section>
 
@@ -123,6 +124,18 @@
               <label class="switch" for="reactive-enabled"><input class="switch-input" id="reactive-enabled" type="checkbox" role="switch" checked><span class="switch-track"></span></label>
             </div>
             <div class="control select-control">
+              <label for="reaction-preset">Reaction Preset</label>
+              <select id="reaction-preset">
+                <option value="balanced" selected>Balanced</option>
+                <option value="bass-heavy">Bass Heavy</option>
+                <option value="riddim">Riddim</option>
+                <option value="ambient">Ambient</option>
+                <option value="percussive">Percussive</option>
+                <option value="smooth">Smooth</option>
+                <option value="custom">Custom</option>
+              </select>
+            </div>
+            <div class="control select-control">
               <label for="reaction-band">Reaction Source</label>
               <select id="reaction-band">
                 <option value="overall">Overall</option>
@@ -131,6 +144,10 @@
                 <option value="treble">Treble</option>
               </select>
             </div>
+            <div class="control select-control"><label for="curve-overall">Overall Response</label><select id="curve-overall"><option value="linear" selected>Linear</option><option value="smooth">Smooth</option><option value="punchy">Punchy</option><option value="exponential">Exponential</option></select></div>
+            <div class="control select-control"><label for="curve-bass">Bass Response</label><select id="curve-bass"><option value="linear" selected>Linear</option><option value="smooth">Smooth</option><option value="punchy">Punchy</option><option value="exponential">Exponential</option></select></div>
+            <div class="control select-control"><label for="curve-mids">Mids Response</label><select id="curve-mids"><option value="linear" selected>Linear</option><option value="smooth">Smooth</option><option value="punchy">Punchy</option><option value="exponential">Exponential</option></select></div>
+            <div class="control select-control"><label for="curve-treble">Treble Response</label><select id="curve-treble"><option value="linear" selected>Linear</option><option value="smooth">Smooth</option><option value="punchy">Punchy</option><option value="exponential">Exponential</option></select></div>
             <div class="control select-control">
               <label for="fft-size">Audio Resolution</label>
               <select id="fft-size">
@@ -146,6 +163,15 @@
             <div class="control"><label for="sensitivity">Sensitivity</label><div class="value-editor"><input class="value-input" id="sensitivity-value" type="number" min="0.25" max="3" step="0.05" value="1.35"><span class="value-suffix">×</span></div><input id="sensitivity" type="range" min="0.25" max="3" step="0.05" value="1.35"></div>
             <div class="control"><label for="smoothing">Smoothing</label><div class="value-editor"><input class="value-input" id="smoothing-value" type="number" min="0" max="95" step="1" value="72"><span class="value-suffix">%</span></div><input id="smoothing" type="range" min="0" max="0.95" step="0.01" value="0.72"></div>
             <div class="control"><label for="threshold">Noise Threshold</label><div class="value-editor"><input class="value-input" id="threshold-value" type="number" min="0" max="0.15" step="0.005" value="0.025"></div><input id="threshold" type="range" min="0" max="0.15" step="0.005" value="0.025"></div>
+            <div class="control"><label for="attack">Transient Attack</label><div class="value-editor"><input class="value-input" id="attack-value" type="number" min="1" max="250" step="1" value="22"><span class="value-suffix">ms</span></div><input id="attack" type="range" min="1" max="250" step="1" value="22"></div>
+            <div class="control"><label for="release">Transient Release</label><div class="value-editor"><input class="value-input" id="release-value" type="number" min="20" max="1000" step="5" value="180"><span class="value-suffix">ms</span></div><input id="release" type="range" min="20" max="1000" step="5" value="180"></div>
+            <div class="control"><label for="transient-impact">Transient Impact</label><div class="value-editor"><input class="value-input" id="transient-impact-value" type="number" min="0" max="2" step="0.05" value="0.35"><span class="value-suffix">×</span></div><input id="transient-impact" type="range" min="0" max="2" step="0.05" value="0.35"></div>
+            <div class="control toggle-control"><label for="region-mapping">Frequency Regions</label><label class="switch" for="region-mapping"><input class="switch-input" id="region-mapping" type="checkbox" role="switch"><span class="switch-track"></span></label></div>
+            <div class="control"><label for="region-strength">Region Strength</label><div class="value-editor"><input class="value-input" id="region-strength-value" type="number" min="0" max="2" step="0.05" value="0.85"><span class="value-suffix">×</span></div><input id="region-strength" type="range" min="0" max="2" step="0.05" value="0.85"></div>
+            <div class="control toggle-control"><label for="movement-mapping">Spatial Movement</label><label class="switch" for="movement-mapping"><input class="switch-input" id="movement-mapping" type="checkbox" role="switch" checked><span class="switch-track"></span></label></div>
+            <div class="control"><label for="bass-push">Bass Push</label><div class="value-editor"><input class="value-input" id="bass-push-value" type="number" min="0" max="2" step="0.05" value="1"><span class="value-suffix">×</span></div><input id="bass-push" type="range" min="0" max="2" step="0.05" value="1"></div>
+            <div class="control"><label for="mid-rotation">Mid Rotation</label><div class="value-editor"><input class="value-input" id="mid-rotation-value" type="number" min="0" max="2" step="0.05" value="1"><span class="value-suffix">×</span></div><input id="mid-rotation" type="range" min="0" max="2" step="0.05" value="1"></div>
+            <div class="control"><label for="treble-turbulence">Treble Turbulence</label><div class="value-editor"><input class="value-input" id="treble-turbulence-value" type="number" min="0" max="2" step="0.05" value="1"><span class="value-suffix">×</span></div><input id="treble-turbulence" type="range" min="0" max="2" step="0.05" value="1"></div>
             <div class="meter-grid" aria-label="Audio levels">
               <div class="meter"><span>BASS</span><i><b id="meter-bass"></b></i></div>
               <div class="meter"><span>MIDS</span><i><b id="meter-mids"></b></i></div>
@@ -200,11 +226,13 @@
             </div>
           </div>
           <div class="collapsible-content">
+            <div class="control select-control"><label for="camera-movement">Camera Movement</label><select id="camera-movement"><option value="static" selected>Static</option><option value="orbit">Orbit</option><option value="slow-orbit">Slow Orbit</option><option value="pendulum">Pendulum</option><option value="figure-eight">Figure Eight</option><option value="push-pull">Push / Pull</option><option value="audio-pulse">Audio Pulse</option></select></div>
             <div class="control"><label for="yaw">Rotate Y-axis</label><div class="value-editor"><input class="value-input" id="yaw-value" type="number" min="-180" max="180" step="0.5" value="0"><span class="value-suffix">°</span></div><input id="yaw" type="range" min="-180" max="180" step="0.5" value="0"></div>
             <div class="control"><label for="elevation">Elevation</label><div class="value-editor"><input class="value-input" id="elevation-value" type="number" min="8" max="72" step="0.5" value="26.565"><span class="value-suffix">°</span></div><input id="elevation" type="range" min="8" max="72" step="0.5" value="26.565"></div>
             <div class="control"><label for="distance">Distance</label><div class="value-editor"><input class="value-input" id="distance-value" type="number" min="0.72" max="2.4" step="0.01" value="1.118034"></div><input id="distance" type="range" min="0.72" max="2.4" step="0.01" value="1.118034"></div>
             <div class="control toggle-control"><label for="auto-rotate">Auto Rotate</label><label class="switch" for="auto-rotate"><input class="switch-input" id="auto-rotate" type="checkbox" role="switch"><span class="switch-track"></span></label></div>
             <div class="control"><label for="rotate-speed">Rotate Speed</label><div class="value-editor"><input class="value-input" id="rotate-speed-value" type="number" min="-30" max="30" step="0.5" value="6"><span class="value-suffix">°/s</span></div><input id="rotate-speed" type="range" min="-30" max="30" step="0.5" value="6"></div>
+            <div class="control"><label for="camera-smoothing">Camera Smoothing</label><div class="value-editor"><input class="value-input" id="camera-smoothing-value" type="number" min="0" max="100" step="1" value="18"><span class="value-suffix">%</span></div><input id="camera-smoothing" type="range" min="0" max="100" step="1" value="18"></div>
             <button id="reset-camera" class="secondary" type="button">Center Visualization</button>
           </div>
         </section>
@@ -218,9 +246,20 @@
             </div>
           </div>
           <div class="collapsible-content">
+            <div class="control select-control"><label for="environment-preset">Environment Preset</label><select id="environment-preset"><option value="black-studio" selected>Black Studio</option><option value="dark-metallic">Dark Metallic</option><option value="soft-white">Soft White</option><option value="colored">Colored Environment</option><option value="custom">Custom</option></select></div>
             <div class="control color-control"><label for="background-color">Background</label><input id="background-color" type="color" value="#050505"></div>
             <div class="control"><label for="brightness">Material Brightness</label><div class="value-editor"><input class="value-input" id="brightness-value" type="number" min="0.35" max="2" step="0.05" value="1"><span class="value-suffix">×</span></div><input id="brightness" type="range" min="0.35" max="2" step="0.05" value="1"></div>
             <div class="control"><label for="iridescence">Iridescence</label><div class="value-editor"><input class="value-input" id="iridescence-value" type="number" min="0" max="2" step="0.05" value="1"><span class="value-suffix">×</span></div><input id="iridescence" type="range" min="0" max="2" step="0.05" value="1"></div>
+            <div class="control"><label for="roughness">Roughness</label><div class="value-editor"><input class="value-input" id="roughness-value" type="number" min="0.35" max="2.5" step="0.05" value="1"><span class="value-suffix">×</span></div><input id="roughness" type="range" min="0.35" max="2.5" step="0.05" value="1"></div>
+            <div class="control"><label for="metallic">Metallic Response</label><div class="value-editor"><input class="value-input" id="metallic-value" type="number" min="0" max="2.5" step="0.05" value="1"><span class="value-suffix">×</span></div><input id="metallic" type="range" min="0" max="2.5" step="0.05" value="1"></div>
+            <div class="control"><label for="reflection-intensity">Reflection Intensity</label><div class="value-editor"><input class="value-input" id="reflection-intensity-value" type="number" min="0" max="3" step="0.05" value="1"><span class="value-suffix">×</span></div><input id="reflection-intensity" type="range" min="0" max="3" step="0.05" value="1"></div>
+            <div class="control"><label for="fresnel-strength">Fresnel Strength</label><div class="value-editor"><input class="value-input" id="fresnel-strength-value" type="number" min="0" max="3" step="0.05" value="1"><span class="value-suffix">×</span></div><input id="fresnel-strength" type="range" min="0" max="3" step="0.05" value="1"></div>
+            <div class="control"><label for="environment-intensity">Environment Intensity</label><div class="value-editor"><input class="value-input" id="environment-intensity-value" type="number" min="0" max="3" step="0.05" value="1"><span class="value-suffix">×</span></div><input id="environment-intensity" type="range" min="0" max="3" step="0.05" value="1"></div>
+            <div class="control"><label for="highlight-contrast">Highlight Contrast</label><div class="value-editor"><input class="value-input" id="highlight-contrast-value" type="number" min="0.5" max="2" step="0.05" value="1"><span class="value-suffix">×</span></div><input id="highlight-contrast" type="range" min="0.5" max="2" step="0.05" value="1"></div>
+            <div class="control toggle-control"><label for="bloom-enabled">Bloom</label><label class="switch" for="bloom-enabled"><input class="switch-input" id="bloom-enabled" type="checkbox" role="switch"><span class="switch-track"></span></label></div>
+            <div class="control"><label for="bloom-strength">Bloom Strength</label><div class="value-editor"><input class="value-input" id="bloom-strength-value" type="number" min="0" max="2" step="0.05" value="0.7"><span class="value-suffix">×</span></div><input id="bloom-strength" type="range" min="0" max="2" step="0.05" value="0.7"></div>
+            <div class="control"><label for="bloom-threshold">Bloom Threshold</label><div class="value-editor"><input class="value-input" id="bloom-threshold-value" type="number" min="0" max="1.5" step="0.05" value="0.78"></div><input id="bloom-threshold" type="range" min="0" max="1.5" step="0.05" value="0.78"></div>
+            <div class="control"><label for="bloom-radius">Bloom Radius</label><div class="value-editor"><input class="value-input" id="bloom-radius-value" type="number" min="0.5" max="4" step="0.1" value="1.2"><span class="value-suffix">px</span></div><input id="bloom-radius" type="range" min="0.5" max="4" step="0.1" value="1.2"></div>
           </div>
         </section>
 
@@ -273,6 +312,11 @@
               <label for="show-performance-stats">Show Performance Stats</label>
               <label class="switch" for="show-performance-stats"><input class="switch-input" id="show-performance-stats" type="checkbox" role="switch"><span class="switch-track"></span></label>
             </div>
+            <div class="gpu-capability" id="gpu-capability">
+              <div><span>GPU</span><strong id="gpu-tier">Detecting…</strong></div>
+              <div class="gpu-renderer" id="gpu-renderer">WebGL2 renderer detection in progress.</div>
+              <button class="secondary compact-button" id="apply-gpu-recommendation" type="button">Apply Recommended Quality</button>
+            </div>
             <div class="performance-readout" aria-label="Performance statistics">
               <div><span>FPS</span><strong id="perf-fps">60</strong></div>
               <div><span>Frame</span><strong id="perf-frame">16.7 ms</strong></div>
@@ -281,6 +325,24 @@
               <div><span>Effective</span><strong id="perf-effective">ULTRA / 100%</strong></div>
               <div><span>Solver</span><strong id="perf-solver">1 step @ 60 Hz</strong></div>
             </div>
+          </div>
+        </section>
+
+        <section class="section is-collapsed" data-section="presets">
+          <div class="collapsible-header">
+            <h2 tabindex="0">Presets</h2>
+            <div class="collapsible-header-actions">
+              <button class="collapse-toggle" aria-expanded="false" title="Expand Presets" type="button">+</button>
+            </div>
+          </div>
+          <div class="collapsible-content">
+            <div class="control select-control"><label for="saved-preset">Saved Preset</label><select id="saved-preset"><option value="">No saved presets</option></select></div>
+            <div class="button-row"><button id="preset-save" class="secondary" type="button">Save Preset</button><button id="preset-rename" class="secondary" type="button">Rename</button></div>
+            <div class="button-row"><button id="preset-duplicate" class="secondary" type="button">Duplicate</button><button id="preset-delete" class="secondary" type="button">Delete</button></div>
+            <button id="preset-default" class="secondary" type="button">Set as Default</button>
+            <button id="preset-compare" class="secondary hold-button" type="button" disabled>Hold to Compare Previous</button>
+            <button id="reset-all" class="secondary danger-soft" type="button">Reset All</button>
+            <div class="control-hint">Lock icons protect individual parameters when presets are applied.</div>
           </div>
         </section>
 

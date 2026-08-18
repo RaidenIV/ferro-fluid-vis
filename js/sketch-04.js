@@ -18,6 +18,7 @@ import offsetVert from './shader/offset.vert.glsl.js';
 import offsetFrag from './shader/offset.frag.glsl.js';
 import heightMapVert from './shader/height-map.vert.glsl.js';
 import heightMapFrag from './shader/height-map.frag.glsl.js';
+import postprocessFrag from './shader/postprocess.frag.glsl.js';
 import spikesVert from './shader/spikes.vert.glsl.js';
 import spikesFrag from './shader/spikes.frag.glsl.js';
 import testVert from './shader/test.vert.glsl.js';
@@ -45,7 +46,7 @@ export class Sketch {
 
     // Runtime visual/audio controls. Audio defaults affect the ferrofluid itself, not the camera.
     baseZoom = 0.5;
-    audioLevels = { overall: 0, bass: 0, mids: 0, treble: 0 };
+    audioLevels = { overall: 0, bass: 0, mids: 0, treble: 0, transient: 0 };
     audioReactive = {
         enabled: true,
         band: 'overall',
@@ -53,11 +54,29 @@ export class Sketch {
         spikeSharpness: 0.45,
         agitation: 0.65,
         cameraZoom: 0,
+        transientImpact: 0.35,
+        regionMapping: false,
+        regionStrength: 0.85,
+        movementMapping: true,
+        bassPush: 1,
+        midRotation: 1,
+        trebleTurbulence: 1,
     };
     appearance = {
         backgroundColor: '#0d0d0d',
         materialBrightness: 1,
         iridescence: 1,
+        environmentPreset: 'black-studio',
+        roughness: 1,
+        metallic: 1,
+        reflectionIntensity: 1,
+        fresnelStrength: 1,
+        environmentIntensity: 1,
+        highlightContrast: 1,
+        bloomEnabled: false,
+        bloomStrength: 0.7,
+        bloomThreshold: 0.78,
+        bloomRadius: 1.2,
     };
     cameraControls = {
         yaw: 0,
@@ -65,7 +84,16 @@ export class Sketch {
         distance: 1.118034,
         autoRotate: false,
         rotateSpeed: 8,
+        movementPreset: 'static',
+        smoothing: 0.18,
     };
+    cameraTarget = { yaw: 0, elevation: 26.565, distance: 1.118034 };
+    cameraMotionPhase = 0;
+    manualFrameMode = false;
+    externalAnalysisFrame = null;
+    contextLost = false;
+    pausedForVisibility = false;
+    eventsInitialized = false;
     exportResolution = null;
 
     // Performance controls keep the expensive fluid surface pass independent
@@ -164,11 +192,30 @@ export class Sketch {
         this.pane = pane;
         this.audioControl = audioControl;
         this.boundRun = (time) => this.run(time);
+        this.boundContextLost = (event) => { event.preventDefault(); this.contextLost = true; };
+        this.boundContextRestored = () => {
+            const state = this.getSerializableState();
+            this.contextLost = false;
+            this.#init();
+            this.applySerializableState(state);
+        };
+        this.canvas.addEventListener('webglcontextlost', this.boundContextLost, false);
+        this.canvas.addEventListener('webglcontextrestored', this.boundContextRestored, false);
+        document.addEventListener('visibilitychange', () => {
+            this.pausedForVisibility = document.hidden;
+            this.#time = performance.now();
+            this.lastProcessedFrameTime = 0;
+        });
 
         this.#init();
     }
 
     run(time = 0) {
+        if (this.contextLost || this.pausedForVisibility || this.manualFrameMode) {
+            this.#time = time;
+            requestAnimationFrame(this.boundRun);
+            return;
+        }
         if (this.envMapTextureLoaded) {
             const fpsLimit = this.performanceSettings.exportMode ? 0 : Number(this.performanceSettings.fpsLimit);
             const frameInterval = fpsLimit > 0 ? 1000 / fpsLimit : 0;
@@ -220,6 +267,10 @@ export class Sketch {
     }
 
     #init() {
+        this.sceneFBO = null;
+        this.sceneAttachments = null;
+        this.sceneFBOWidth = 0;
+        this.sceneFBOHeight = 0;
         this.gl = this.canvas.getContext('webgl2', { antialias: false, alpha: false, preserveDrawingBuffer: true });
 
         /** @type {WebGLRenderingContext} */
@@ -244,6 +295,7 @@ export class Sketch {
         this.sortPrg = twgl.createProgramInfo(gl, [sortVert, sortFrag]);
         this.offsetPrg = twgl.createProgramInfo(gl, [offsetVert, offsetFrag]);
         this.heightMapPrg = twgl.createProgramInfo(gl, [heightMapVert, heightMapFrag]);
+        this.postprocessPrg = twgl.createProgramInfo(gl, [heightMapVert, postprocessFrag]);
         this.spikesPrg = twgl.createProgramInfo(gl, [spikesVert, spikesFrag]);
         this.testPrg = twgl.createProgramInfo(gl, [testVert, testFrag]);
         this.groundPrg = twgl.createProgramInfo(gl, [groundVert, groundFrag]);
@@ -256,6 +308,7 @@ export class Sketch {
         // Setup Meshes
         this.quadBufferInfo = twgl.createBufferInfoFromArrays(gl, { a_position: { numComponents: 2, data: [-1, -1, 3, -1, -1, 3] }});
         this.quadVAO = twgl.createVAOAndSetAttributes(gl, this.pressurePrg.attribSetters, this.quadBufferInfo.attribs, this.quadBufferInfo.indices);
+        this.postprocessVAO = twgl.createVAOAndSetAttributes(gl, this.postprocessPrg.attribSetters, this.quadBufferInfo.attribs, this.quadBufferInfo.indices);
         const spikesArrays = twgl.primitives.createPlaneVertices(1, 1, this.planeResolution, this.planeResolution);
         this.spikesBufferInfo = twgl.createBufferInfoFromArrays(gl, spikesArrays);
         this.spikesVAO = twgl.createVAOAndSetAttributes(gl, this.spikesPrg.attribSetters, this.spikesBufferInfo.attribs, this.spikesBufferInfo.indices);
@@ -290,10 +343,12 @@ export class Sketch {
 
         this.resize();
 
-        if (this.onInit) this.onInit(this);
+        if (this.onInit) { const callback = this.onInit; this.onInit = null; callback(this); }
     }
 
     #initEvents() {
+        if (this.eventsInitialized) return;
+        this.eventsInitialized = true;
         this.isPointerDown = false;
         this.isOrbiting = false;
         this.pointer = vec2.create();
@@ -333,9 +388,9 @@ export class Sketch {
                 const dy = e.clientY - this.orbitPointer[1];
                 this.orbitPointer[0] = e.clientX;
                 this.orbitPointer[1] = e.clientY;
-                this.cameraControls.yaw += dx * 0.22;
-                this.cameraControls.elevation = Math.max(8, Math.min(72, this.cameraControls.elevation - dy * 0.18));
-                this.#syncCameraFromControls(true);
+                this.cameraTarget.yaw += dx * 0.22;
+                this.cameraTarget.elevation = Math.max(8, Math.min(72, this.cameraTarget.elevation - dy * 0.18));
+                this.cameraControls.movementPreset = 'static';
                 return;
             }
             if (!this.isPointerDown) return;
@@ -344,8 +399,8 @@ export class Sketch {
         });
         fromEvent(this.canvas, 'wheel').subscribe((e) => {
             e.preventDefault();
-            this.cameraControls.distance = Math.max(0.72, Math.min(2.4, this.cameraControls.distance + e.deltaY * 0.0015));
-            this.#syncCameraFromControls(true);
+            this.cameraTarget.distance = Math.max(0.72, Math.min(2.4, this.cameraTarget.distance + e.deltaY * 0.0015));
+            this.cameraControls.movementPreset = 'static';
         });
     }
 
@@ -521,6 +576,11 @@ export class Sketch {
             u_audioMids: 0,
             u_audioTreble: 0,
             u_audioAgitation: this.audioReactive.agitation,
+            u_audioTransient: 0,
+            u_transientImpact: this.audioReactive.transientImpact,
+            u_bassPush: this.audioReactive.bassPush,
+            u_midRotation: this.audioReactive.midRotation,
+            u_trebleTurbulence: this.audioReactive.trebleTurbulence,
         };
         this.indicesUniforms = {
             u_positionTexture: this.currentPositionTexture,
@@ -547,6 +607,11 @@ export class Sketch {
             u_scale: 0,
             u_smoothFactor: 0,
             u_spikeFactor: 0,
+            u_audioBass: 0,
+            u_audioMids: 0,
+            u_audioTreble: 0,
+            u_regionMapping: 0,
+            u_regionStrength: this.audioReactive.regionStrength,
         };
         this.groundUniforms = {
             u_worldMatrix: this.groundWorldMatrix,
@@ -558,6 +623,12 @@ export class Sketch {
             u_backgroundColor: this.backgroundRgb,
             u_materialBrightness: this.appearance.materialBrightness,
             u_iridescence: this.appearance.iridescence,
+            u_roughness: this.appearance.roughness,
+            u_metallic: this.appearance.metallic,
+            u_reflectionIntensity: this.appearance.reflectionIntensity,
+            u_fresnelStrength: this.appearance.fresnelStrength,
+            u_environmentIntensity: this.appearance.environmentIntensity,
+            u_highlightContrast: this.appearance.highlightContrast,
         };
         this.spikesUniforms = {
             u_worldMatrix: this.spikesWorldMatrix,
@@ -569,6 +640,19 @@ export class Sketch {
             u_envMapTexture: this.envMapTexture,
             u_materialBrightness: this.appearance.materialBrightness,
             u_iridescence: this.appearance.iridescence,
+            u_roughness: this.appearance.roughness,
+            u_metallic: this.appearance.metallic,
+            u_reflectionIntensity: this.appearance.reflectionIntensity,
+            u_fresnelStrength: this.appearance.fresnelStrength,
+            u_environmentIntensity: this.appearance.environmentIntensity,
+            u_highlightContrast: this.appearance.highlightContrast,
+        };
+        this.postprocessUniforms = {
+            u_sceneTexture: null,
+            u_texelSize: new Float32Array([1 / Math.max(1, this.gl.drawingBufferWidth), 1 / Math.max(1, this.gl.drawingBufferHeight)]),
+            u_bloomStrength: this.appearance.bloomStrength,
+            u_bloomThreshold: this.appearance.bloomThreshold,
+            u_bloomRadius: this.appearance.bloomRadius,
         };
         this.pointerBlockValues = {
             pointerRadius: this.pointerParams.RADIUS,
@@ -675,14 +759,17 @@ export class Sketch {
     }
 
     #initEnvMap() {
-        /** @type {WebGLRenderingContext} */
         const gl = this.gl;
-
         this.envMapTextureLoaded = false;
-
-        this.envMapTexture = twgl.createTexture(gl, {
+        this.environmentTextures = {};
+        const finishPrimary = () => { this.envMapTextureLoaded = true; };
+        this.environmentTextures.studio = twgl.createTexture(gl, {
             src: new URL('../assets/env-map-01.jpg', import.meta.url).toString(),
-        }, () => this.envMapTextureLoaded = true);
+        }, finishPrimary);
+        this.environmentTextures.metallic = twgl.createTexture(gl, {
+            src: new URL('../assets/env-map-02.jpg', import.meta.url).toString(),
+        });
+        this.envMapTexture = this.environmentTextures.studio;
     }
 
     #initTweakpane() {
@@ -768,6 +855,11 @@ export class Sketch {
         u.u_audioMids = this.audioReactive.enabled ? this.audioLevels.mids : 0;
         u.u_audioTreble = this.audioReactive.enabled ? this.audioLevels.treble : 0;
         u.u_audioAgitation = this.audioReactive.agitation;
+        u.u_audioTransient = this.audioReactive.enabled ? (this.audioLevels.transient || 0) : 0;
+        u.u_transientImpact = this.audioReactive.transientImpact;
+        u.u_bassPush = this.audioReactive.movementMapping ? this.audioReactive.bassPush : 0;
+        u.u_midRotation = this.audioReactive.movementMapping ? this.audioReactive.midRotation : 0;
+        u.u_trebleTurbulence = this.audioReactive.movementMapping ? this.audioReactive.trebleTurbulence : 0;
         twgl.setUniforms(this.integratePrg, u);
 
         this.pointerBlockValues.pointerRadius = this.pointerParams.RADIUS;
@@ -857,6 +949,11 @@ export class Sketch {
         u.u_scale = this.#remapHeightMapZoomScale(this.ZOOM);
         u.u_smoothFactor = this.#remapSmoothFactorZoom(this.ZOOM);
         u.u_spikeFactor = this.#remapSpikeFactorZoom(this.ZOOM) * sharpnessBaseMultiplier * (1 + reactiveLevel * sharpnessControl);
+        u.u_audioBass = this.audioReactive.enabled ? this.audioLevels.bass : 0;
+        u.u_audioMids = this.audioReactive.enabled ? this.audioLevels.mids : 0;
+        u.u_audioTreble = this.audioReactive.enabled ? this.audioLevels.treble : 0;
+        u.u_regionMapping = this.audioReactive.regionMapping ? 1 : 0;
+        u.u_regionStrength = this.audioReactive.regionStrength;
         twgl.setUniforms(this.heightMapPrg, u);
         twgl.drawBufferInfo(gl, this.quadBufferInfo);
     }
@@ -865,7 +962,7 @@ export class Sketch {
         this.#updatePointer();
 
         if (this.isEntryAnimationDone) {
-            this.audioLevels = this.audioControl.getAnalysis();
+            this.audioLevels = this.externalAnalysisFrame || this.audioControl.getAnalysis();
             const reactiveLevel = this.#getReactiveLevel();
             this.ZOOM = Math.max(0.05, Math.min(0.95, this.baseZoom - reactiveLevel * this.audioReactive.cameraZoom * 0.18));
         } else {
@@ -898,18 +995,7 @@ export class Sketch {
             }
         }
 
-        // Camera auto-rotation is independent of the entry animation and audio
-        // state so the sidebar toggle always takes effect immediately.
-        if (this.cameraControls.autoRotate) {
-            const speed = Number(this.cameraControls.rotateSpeed);
-            if (Number.isFinite(speed) && speed !== 0) {
-                this.cameraControls.yaw += speed * (deltaTime / 1000);
-                this.cameraControls.yaw = ((this.cameraControls.yaw + 180) % 360 + 360) % 360 - 180;
-                this.#syncCameraFromControls(false);
-            }
-        }
-
-
+        this.#updateCameraMotion(deltaTime);
 
         // Keep the simulation temporally synchronized with every rendered frame.
         // Adaptive Simulation may reduce solver iterations, but it must never
@@ -929,73 +1015,93 @@ export class Sketch {
         this.performanceStats.simulationHz = Math.min(240, 1000 / Math.max(1, deltaTime));
     }
 
-    #render() {
-        /** @type {WebGLRenderingContext} */
+    #ensureSceneFramebuffer() {
         const gl = this.gl;
+        const width = gl.drawingBufferWidth;
+        const height = gl.drawingBufferHeight;
+        if (!this.sceneAttachments) {
+            this.sceneAttachments = [
+                { format: gl.RGBA, internalFormat: gl.RGBA8, type: gl.UNSIGNED_BYTE, minMag: gl.LINEAR, wrap: gl.CLAMP_TO_EDGE },
+                { format: gl.DEPTH_STENCIL, internalFormat: gl.DEPTH24_STENCIL8 },
+            ];
+        }
+        if (!this.sceneFBO) {
+            this.sceneFBO = twgl.createFramebufferInfo(gl, this.sceneAttachments, width, height);
+            this.sceneFBOWidth = width;
+            this.sceneFBOHeight = height;
+        } else if (this.sceneFBOWidth !== width || this.sceneFBOHeight !== height) {
+            twgl.resizeFramebufferInfo(gl, this.sceneFBO, this.sceneAttachments, width, height);
+            this.sceneFBOWidth = width;
+            this.sceneFBOHeight = height;
+        }
+    }
 
-        // draw ground
-        twgl.bindFramebufferInfo(gl, null);
+    #applyMaterialUniforms(uniforms) {
+        uniforms.u_zoom = this.ZOOM;
+        uniforms.u_envMapTexture = this.envMapTexture;
+        uniforms.u_materialBrightness = this.appearance.materialBrightness;
+        uniforms.u_iridescence = this.appearance.iridescence;
+        uniforms.u_roughness = this.appearance.roughness;
+        uniforms.u_metallic = this.appearance.metallic;
+        uniforms.u_reflectionIntensity = this.appearance.reflectionIntensity;
+        uniforms.u_fresnelStrength = this.appearance.fresnelStrength;
+        uniforms.u_environmentIntensity = this.appearance.environmentIntensity;
+        uniforms.u_highlightContrast = this.appearance.highlightContrast;
+    }
+
+    #renderScene(targetFBO = null) {
+        const gl = this.gl;
+        twgl.bindFramebufferInfo(gl, targetFBO);
+        const width = targetFBO?.width || gl.drawingBufferWidth;
+        const height = targetFBO?.height || gl.drawingBufferHeight;
+        gl.viewport(0, 0, width, height);
         gl.disable(gl.DEPTH_TEST);
         gl.enable(gl.CULL_FACE);
         const bg = this.backgroundRgb;
         gl.clearColor(bg[0], bg[1], bg[2], 1.);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
         gl.useProgram(this.groundPrg.program);
-        this.groundUniforms.u_zoom = this.ZOOM;
-        this.groundUniforms.u_materialBrightness = this.appearance.materialBrightness;
-        this.groundUniforms.u_iridescence = this.appearance.iridescence;
+        this.#applyMaterialUniforms(this.groundUniforms);
         twgl.setUniforms(this.groundPrg, this.groundUniforms);
         gl.bindVertexArray(this.groundVAO);
         gl.drawElements(gl.TRIANGLES, this.groundBufferInfo.numElements, gl.UNSIGNED_SHORT, 0);
 
-
-        // draw spikes
         gl.useProgram(this.spikesPrg.program);
         gl.enable(gl.DEPTH_TEST);
-        this.spikesUniforms.u_zoom = this.ZOOM;
         this.spikesUniforms.u_heightMapTexture = this.textures.heightMap;
-        this.spikesUniforms.u_materialBrightness = this.appearance.materialBrightness;
-        this.spikesUniforms.u_iridescence = this.appearance.iridescence;
+        this.#applyMaterialUniforms(this.spikesUniforms);
         twgl.setUniforms(this.spikesPrg, this.spikesUniforms);
         gl.bindVertexArray(this.spikesVAO);
         gl.drawElements(gl.TRIANGLES, this.spikesBufferInfo.numElements, gl.UNSIGNED_SHORT, 0);
+    }
 
-
-
-       if (this.isDev) {
-            /*const maxViewportSide = Math.max(this.viewportSize[0], this.viewportSize[1]);
-            // draw helper view of particle texture
-            gl.viewport(0, 0, maxViewportSide / 3, maxViewportSide / 3);
-            gl.disable(gl.CULL_FACE);
+    #render() {
+        const gl = this.gl;
+        if (this.appearance.bloomEnabled) {
+            this.#ensureSceneFramebuffer();
+            this.#renderScene(this.sceneFBO);
+            twgl.bindFramebufferInfo(gl, null);
+            gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
             gl.disable(gl.DEPTH_TEST);
-            gl.enable(gl.BLEND);
-            gl.blendFunc(gl.SRC_ALPHA, gl.DST_ALPHA);
-            gl.useProgram(this.drawPrg.program);
-            twgl.setUniforms(this.drawPrg, {
-                u_positionTexture: this.currentPositionTexture,
-                u_velocityTexture: this.currentVelocityTexture,
-                u_resolution: [maxViewportSide / 4, maxViewportSide / 4],
-                u_cellTexSize: [this.cellSideCount, this.cellSideCount],
-                u_cellSize: this.simulationParams.H,
-                u_domainScale: this.domainScale,
-            });
-            gl.drawArrays(gl.POINTS, 0, this.NUM_PARTICLES);
-            gl.disable(gl.BLEND);*/
-
-            // const maxViewportSide = Math.max(this.viewportSize[0], this.viewportSize[1]);
-            // // draw helper view of particle texture
-            // gl.viewport(0, 0, maxViewportSide / 3, maxViewportSide / 3);
-            // gl.bindVertexArray(this.quadVAO);
-            // gl.useProgram(this.testPrg.program);
-            // twgl.setUniforms(this.drawPrg, {
-            //     u_heightMapTexture: this.textures.heightMap
-            // });
-            // twgl.drawBufferInfo(gl, this.quadBufferInfo);
+            gl.disable(gl.CULL_FACE);
+            gl.useProgram(this.postprocessPrg.program);
+            gl.bindVertexArray(this.postprocessVAO);
+            this.postprocessUniforms.u_sceneTexture = this.sceneFBO.attachments[0];
+            this.postprocessUniforms.u_texelSize[0] = 1 / Math.max(1, gl.drawingBufferWidth);
+            this.postprocessUniforms.u_texelSize[1] = 1 / Math.max(1, gl.drawingBufferHeight);
+            this.postprocessUniforms.u_bloomStrength = this.appearance.bloomStrength;
+            this.postprocessUniforms.u_bloomThreshold = this.appearance.bloomThreshold;
+            this.postprocessUniforms.u_bloomRadius = this.appearance.bloomRadius;
+            twgl.setUniforms(this.postprocessPrg, this.postprocessUniforms);
+            twgl.drawBufferInfo(gl, this.quadBufferInfo);
+        } else {
+            this.#renderScene(null);
         }
     }
 
     setAudioReactiveSettings(partial = {}) {
-        const liveFerrofluidKeys = ['spikeHeight', 'spikeSharpness', 'agitation', 'cameraZoom'];
+        const liveFerrofluidKeys = ['spikeHeight', 'spikeSharpness', 'agitation', 'cameraZoom', 'regionStrength', 'bassPush', 'midRotation', 'trebleTurbulence'];
         if (liveFerrofluidKeys.some((key) => Object.prototype.hasOwnProperty.call(partial, key))) {
             this.#finishEntryAnimationForLiveControl();
         }
@@ -1021,6 +1127,19 @@ export class Sketch {
     setAppearanceSettings(partial = {}) {
         Object.assign(this.appearance, partial);
         if ('backgroundColor' in partial) this.#updateBackgroundRgb();
+        if ('environmentPreset' in partial) this.setEnvironmentPreset(partial.environmentPreset);
+    }
+
+    setEnvironmentPreset(preset) {
+        const valid = ['custom', 'black-studio', 'dark-metallic', 'soft-white', 'colored'];
+        const name = valid.includes(preset) ? preset : 'custom';
+        this.appearance.environmentPreset = name;
+        const metallicEnv = name === 'dark-metallic' || name === 'colored';
+        if (this.environmentTextures) {
+            this.envMapTexture = metallicEnv ? this.environmentTextures.metallic : this.environmentTextures.studio;
+            if (this.groundUniforms) this.groundUniforms.u_envMapTexture = this.envMapTexture;
+            if (this.spikesUniforms) this.spikesUniforms.u_envMapTexture = this.envMapTexture;
+        }
     }
 
     setBaseZoom(value) {
@@ -1043,14 +1162,65 @@ export class Sketch {
     }
 
     setCameraSettings(partial = {}) {
-        const projectionDirty = 'elevation' in partial || 'distance' in partial;
         if ('autoRotate' in partial) this.cameraControls.autoRotate = Boolean(partial.autoRotate);
-        if ('yaw' in partial && Number.isFinite(Number(partial.yaw))) this.cameraControls.yaw = Number(partial.yaw);
-        if ('elevation' in partial && Number.isFinite(Number(partial.elevation))) this.cameraControls.elevation = Number(partial.elevation);
-        if ('distance' in partial && Number.isFinite(Number(partial.distance))) this.cameraControls.distance = Number(partial.distance);
+        if ('movementPreset' in partial && ['static', 'orbit', 'slow-orbit', 'pendulum', 'figure-eight', 'push-pull', 'audio-pulse'].includes(partial.movementPreset)) {
+            this.cameraControls.movementPreset = partial.movementPreset;
+            this.cameraMotionPhase = 0;
+        }
+        if ('smoothing' in partial && Number.isFinite(Number(partial.smoothing))) this.cameraControls.smoothing = Math.max(0, Math.min(1, Number(partial.smoothing)));
+        if ('yaw' in partial && Number.isFinite(Number(partial.yaw))) this.cameraTarget.yaw = Number(partial.yaw);
+        if ('elevation' in partial && Number.isFinite(Number(partial.elevation))) this.cameraTarget.elevation = Number(partial.elevation);
+        if ('distance' in partial && Number.isFinite(Number(partial.distance))) this.cameraTarget.distance = Number(partial.distance);
         if ('rotateSpeed' in partial && Number.isFinite(Number(partial.rotateSpeed))) this.cameraControls.rotateSpeed = Number(partial.rotateSpeed);
-        this.cameraControls.elevation = Math.max(8, Math.min(72, Number(this.cameraControls.elevation)));
-        this.cameraControls.distance = Math.max(0.72, Math.min(2.4, Number(this.cameraControls.distance)));
+        this.cameraTarget.elevation = Math.max(8, Math.min(72, this.cameraTarget.elevation));
+        this.cameraTarget.distance = Math.max(0.72, Math.min(2.4, this.cameraTarget.distance));
+        if (this.cameraControls.smoothing <= 0.001) {
+            this.cameraControls.yaw = this.cameraTarget.yaw;
+            this.cameraControls.elevation = this.cameraTarget.elevation;
+            this.cameraControls.distance = this.cameraTarget.distance;
+            this.#syncCameraFromControls(true);
+        }
+    }
+
+    #updateCameraMotion(deltaTime) {
+        const dt = Math.max(0, deltaTime) / 1000;
+        const speed = Number.isFinite(Number(this.cameraControls.rotateSpeed)) ? Number(this.cameraControls.rotateSpeed) : 6;
+        if (this.cameraControls.autoRotate) this.cameraTarget.yaw += speed * dt;
+        this.cameraTarget.yaw = ((this.cameraTarget.yaw + 180) % 360 + 360) % 360 - 180;
+
+        const preset = this.cameraControls.movementPreset || 'static';
+        this.cameraMotionPhase += dt * Math.max(0.15, Math.abs(speed) * Math.PI / 180);
+        let desiredYaw = this.cameraTarget.yaw;
+        let desiredElevation = this.cameraTarget.elevation;
+        let desiredDistance = this.cameraTarget.distance;
+        const phase = this.cameraMotionPhase;
+        const direction = speed < 0 ? -1 : 1;
+
+        if (preset === 'orbit') desiredYaw += direction * phase * 42;
+        else if (preset === 'slow-orbit') desiredYaw += direction * phase * 16;
+        else if (preset === 'pendulum') desiredYaw += Math.sin(phase * 1.25) * 30;
+        else if (preset === 'figure-eight') {
+            desiredYaw += Math.sin(phase) * 32;
+            desiredElevation += Math.sin(phase * 2) * 8;
+        } else if (preset === 'push-pull') {
+            desiredDistance *= 1 + Math.sin(phase * 1.4) * 0.13;
+        } else if (preset === 'audio-pulse') {
+            desiredDistance = Math.max(0.72, desiredDistance - (this.audioLevels.overall || 0) * 0.22);
+            desiredYaw += (this.audioLevels.mids || 0) * 8;
+        }
+
+        desiredElevation = Math.max(8, Math.min(72, desiredElevation));
+        desiredDistance = Math.max(0.72, Math.min(2.4, desiredDistance));
+        const smoothing = Math.max(0, Math.min(1, Number(this.cameraControls.smoothing) || 0));
+        const alpha = smoothing <= 0.001 ? 1 : 1 - Math.exp(-deltaTime / (18 + smoothing * 420));
+        const angleDelta = ((desiredYaw - this.cameraControls.yaw + 540) % 360) - 180;
+        const prevElevation = this.cameraControls.elevation;
+        const prevDistance = this.cameraControls.distance;
+        this.cameraControls.yaw += angleDelta * alpha;
+        this.cameraControls.elevation += (desiredElevation - this.cameraControls.elevation) * alpha;
+        this.cameraControls.distance += (desiredDistance - this.cameraControls.distance) * alpha;
+        this.cameraControls.yaw = ((this.cameraControls.yaw + 180) % 360 + 360) % 360 - 180;
+        const projectionDirty = Math.abs(this.cameraControls.elevation - prevElevation) > 0.0005 || Math.abs(this.cameraControls.distance - prevDistance) > 0.0005;
         this.#syncCameraFromControls(projectionDirty);
     }
 
@@ -1060,7 +1230,10 @@ export class Sketch {
             elevation: 26.565,
             distance: 1.118034,
             autoRotate: false,
+            movementPreset: 'static',
         });
+        Object.assign(this.cameraTarget, { yaw: 0, elevation: 26.565, distance: 1.118034 });
+        this.cameraMotionPhase = 0;
         this.#syncCameraFromControls();
     }
 
@@ -1147,7 +1320,7 @@ export class Sketch {
                 STEPS: this.simulationParams.STEPS,
             },
             pointer: { ...this.pointerParams },
-            camera: { ...this.cameraControls },
+            camera: { ...this.cameraControls, targetYaw: this.cameraTarget.yaw, targetElevation: this.cameraTarget.elevation, targetDistance: this.cameraTarget.distance },
             appearance: { ...this.appearance },
             baseZoom: this.baseZoom,
             performance: {
@@ -1161,9 +1334,63 @@ export class Sketch {
         };
     }
 
+    setManualFrameMode(enabled) {
+        this.manualFrameMode = Boolean(enabled);
+        this.lastProcessedFrameTime = 0;
+        this.#time = performance.now();
+    }
+
+    renderDeterministicFrame(deltaMs, analysisFrame = null) {
+        if (this.contextLost || !this.envMapTextureLoaded) return;
+        const dt = Math.max(1, Number(deltaMs) || this.TARGET_FRAME_DURATION);
+        this.#deltaTime = dt;
+        this.#deltaFrames = dt / this.TARGET_FRAME_DURATION;
+        this.#frames += this.#deltaFrames;
+        this.externalAnalysisFrame = analysisFrame;
+        this.#animate(dt);
+        this.#render();
+        this.externalAnalysisFrame = null;
+    }
+
+    getGpuCapabilities() {
+        const gl = this.gl;
+        if (!gl) return { renderer: 'Unavailable', vendor: 'Unavailable', recommendedQuality: 'medium', tier: 'Unknown' };
+        const debug = gl.getExtension('WEBGL_debug_renderer_info');
+        const renderer = debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+        const vendor = debug ? gl.getParameter(debug.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR);
+        const maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE) || 0;
+        const maxRenderbufferSize = gl.getParameter(gl.MAX_RENDERBUFFER_SIZE) || 0;
+        const mobile = /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent);
+        const text = `${vendor} ${renderer}`.toLowerCase();
+        const integrated = /intel|iris|uhd|adreno|mali|apple gpu|powervr/.test(text);
+        let recommendedQuality = 'ultra';
+        let tier = 'High';
+        if (mobile || maxTextureSize < 8192) { recommendedQuality = 'medium'; tier = 'Moderate'; }
+        else if (integrated || maxRenderbufferSize < 8192) { recommendedQuality = 'high'; tier = 'Balanced'; }
+        return { renderer: String(renderer || 'Unknown'), vendor: String(vendor || 'Unknown'), maxTextureSize, maxRenderbufferSize, recommendedQuality, tier };
+    }
+
+    applySerializableState(state = {}) {
+        if (state.audioReactive) this.setAudioReactiveSettings(state.audioReactive);
+        if (state.simulation) this.setSimulationSettings(state.simulation);
+        if (state.pointer) this.setPointerSettings(state.pointer);
+        if (state.appearance) this.setAppearanceSettings(state.appearance);
+        if (state.baseZoom != null) this.setBaseZoom(state.baseZoom);
+        if (state.camera) {
+            const camera = state.camera;
+            if (camera.targetYaw != null) this.cameraTarget.yaw = camera.targetYaw;
+            if (camera.targetElevation != null) this.cameraTarget.elevation = camera.targetElevation;
+            if (camera.targetDistance != null) this.cameraTarget.distance = camera.targetDistance;
+            this.setCameraSettings(camera);
+        }
+        if (state.performance) this.setPerformanceSettings(state.performance);
+    }
+
     #getReactiveLevel() {
         if (!this.audioReactive.enabled) return 0;
-        return this.audioLevels[this.audioReactive.band] ?? this.audioLevels.overall ?? 0;
+        const base = this.audioLevels[this.audioReactive.band] ?? this.audioLevels.overall ?? 0;
+        const transient = (this.audioLevels.transient || 0) * (this.audioReactive.transientImpact || 0);
+        return Math.max(0, Math.min(1.75, base + transient));
     }
 
     #syncCameraFromControls(updateProjection = true) {
