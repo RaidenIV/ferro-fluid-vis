@@ -105,8 +105,6 @@ export class Sketch {
     autoRenderScale = 1;
     lastAutoTuneTime = 0;
     lastProcessedFrameTime = 0;
-    simulationAccumulator = 0;
-    lastActivityTime = 0;
     drawingBufferOverride = false;
 
     // resolution of the spikes plane (side segments)
@@ -903,34 +901,22 @@ export class Sketch {
 
 
 
-        const audioActivity = this.audioReactive.enabled ? (this.audioLevels.overall || 0) : 0;
-        const pointerActivity = this.isPointerDown || vec2.squaredLength(this.pointerLerpDelta) > 0.000004;
-        if (audioActivity > 0.02 || pointerActivity) this.lastActivityTime = this.#time;
-
-        const adaptive = this.performanceSettings.adaptiveSimulation && !this.performanceSettings.exportMode && this.isEntryAnimationDone;
-        const idle = adaptive && (this.#time - this.lastActivityTime > 1500) && !this.audioControl.isPlaying && !pointerActivity;
-        const simulationInterval = idle ? (1000 / 15) : 0;
-        this.simulationAccumulator += deltaTime;
-        const shouldSimulate = !simulationInterval || this.simulationAccumulator >= simulationInterval;
-
-        if (shouldSimulate) {
-            const simulationStart = performance.now();
-            const stableDelta = Math.min(20, Math.max(4, 16 * this.#deltaFrames));
-            this.#simulate(stableDelta);
-            vec2.set(this.pointerLerpDelta, 0, 0);
-            const additionalSteps = this.#getAdaptiveStepCount();
-            for (let i = 0; i < additionalSteps; ++i) this.#simulate(stableDelta);
-            this.#renderHeightMap();
-            const simulationMs = performance.now() - simulationStart;
-            this.performanceStats.simulationMs += (simulationMs - this.performanceStats.simulationMs) * 0.12;
-            this.performanceStats.effectiveSteps = 1 + additionalSteps;
-            this.performanceStats.simulationHz = idle ? 15 : Math.min(240, 1000 / Math.max(1, deltaTime));
-            this.simulationAccumulator = 0;
-        } else {
-            this.performanceStats.simulationHz = 15;
-            this.performanceStats.effectiveSteps = 0;
-            this.performanceStats.simulationMs *= 0.96;
-        }
+        // Keep the simulation temporally synchronized with every rendered frame.
+        // Adaptive Simulation may reduce solver iterations, but it must never
+        // reduce the simulation update rate independently of the displayed FPS;
+        // doing so makes slow motion visibly stutter even while the renderer is
+        // correctly reporting ~60 FPS.
+        const simulationStart = performance.now();
+        const stableDelta = Math.min(20, Math.max(4, 16 * this.#deltaFrames));
+        this.#simulate(stableDelta);
+        vec2.set(this.pointerLerpDelta, 0, 0);
+        const additionalSteps = this.#getAdaptiveStepCount();
+        for (let i = 0; i < additionalSteps; ++i) this.#simulate(stableDelta);
+        this.#renderHeightMap();
+        const simulationMs = performance.now() - simulationStart;
+        this.performanceStats.simulationMs += (simulationMs - this.performanceStats.simulationMs) * 0.12;
+        this.performanceStats.effectiveSteps = 1 + additionalSteps;
+        this.performanceStats.simulationHz = Math.min(240, 1000 / Math.max(1, deltaTime));
     }
 
     #render() {
@@ -1077,14 +1063,32 @@ export class Sketch {
         if ('showStats' in partial) this.performanceSettings.showStats = Boolean(partial.showStats);
 
         const ceiling = Math.max(0, this.qualityOrder.indexOf(this.performanceSettings.simulationQuality));
+        const qualityWasExplicitlySet = Object.prototype.hasOwnProperty.call(partial, 'simulationQuality');
+        const modeWasExplicitlySet = Object.prototype.hasOwnProperty.call(partial, 'mode');
+        const scaleWasExplicitlySet = Object.prototype.hasOwnProperty.call(partial, 'renderScale');
+
         if (this.performanceSettings.mode === 'manual') {
             this.autoQualityIndex = ceiling;
             this.autoRenderScale = this.performanceSettings.renderScale;
             this.#applyEffectivePerformanceState(this.performanceSettings.simulationQuality, this.performanceSettings.renderScale);
         } else {
-            this.autoQualityIndex = Math.min(this.autoQualityIndex, ceiling);
-            this.autoRenderScale = Math.min(this.autoRenderScale, this.performanceSettings.renderScale);
-            this.#applyEffectivePerformanceState(this.qualityOrder[this.autoQualityIndex], this.autoRenderScale);
+            // In Auto mode the Simulation Quality selector is the quality ceiling,
+            // but selecting a preset must still apply that preset immediately.
+            // Previously a prior Auto downshift could leave the effective quality
+            // stuck below the newly selected dropdown value, making the control
+            // appear broken. Auto tuning may reduce it again later only if needed.
+            if (qualityWasExplicitlySet || modeWasExplicitlySet) {
+                this.autoQualityIndex = ceiling;
+                this.lastAutoTuneTime = performance.now();
+            } else {
+                this.autoQualityIndex = Math.min(this.autoQualityIndex, ceiling);
+            }
+            if (scaleWasExplicitlySet || modeWasExplicitlySet) {
+                this.autoRenderScale = this.performanceSettings.renderScale;
+            } else {
+                this.autoRenderScale = Math.min(this.autoRenderScale, this.performanceSettings.renderScale);
+            }
+            this.#applyEffectivePerformanceState(this.qualityOrder[this.autoQualityIndex], Math.min(this.performanceSettings.renderScale, this.autoRenderScale));
         }
         this.performanceStats.showStats = this.performanceSettings.showStats;
     }
