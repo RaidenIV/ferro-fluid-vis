@@ -65,7 +65,6 @@
             </div>
             <div class="button-row">
               <button id="reset-audio" class="secondary" type="button" disabled>Reset</button>
-              <button id="microphone" class="secondary" type="button">Microphone</button>
             </div>
 
             <div class="control">
@@ -227,33 +226,114 @@
           </div>
         </section>
 
-        <section class="section" data-section="export">
+        <section class="section is-collapsed" data-section="export" data-collapsible-title="Export">
           <div class="collapsible-header">
             <h2 tabindex="0">Export</h2>
             <div class="collapsible-header-actions">
-              <button class="section-reset" data-reset-section="export" title="Reset Export" type="button">↺</button>
-              <button class="collapse-toggle" aria-expanded="true" title="Collapse Export" type="button">−</button>
+              <button class="section-reset" data-reset-section="export" title="Reset Export to defaults" aria-label="Reset Export to defaults" type="button">↺</button>
+              <button class="collapse-toggle" aria-expanded="false" title="Expand Export" aria-label="Expand Export" type="button">+</button>
             </div>
           </div>
-          <div class="collapsible-content">
-            <div class="control text-control"><label for="export-filename">Filename</label><input id="export-filename" class="text-input" type="text" value="ferrofluid-visualizer" spellcheck="false"></div>
-            <div class="control select-control"><label for="export-format">Format</label><select id="export-format"><option value="webm">WebM</option><option value="mp4">MP4</option></select></div>
-            <div class="control select-control"><label for="export-fps">FPS</label><select id="export-fps"><option value="30">30</option><option value="60" selected>60</option></select></div>
-            <div class="control select-control"><label for="export-resolution">Resolution</label><select id="export-resolution"><option value="current">Current viewport</option><option value="1920x1080" selected>1920 × 1080</option><option value="1080x1920">1080 × 1920</option><option value="2560x1440">2560 × 1440</option><option value="3840x2160">3840 × 2160</option></select></div>
-            <div class="control select-control"><label for="export-bitrate">Bitrate</label><select id="export-bitrate"><option value="8000000">8 Mbps</option><option value="16000000" selected>16 Mbps</option><option value="24000000">24 Mbps</option><option value="40000000">40 Mbps</option></select></div>
-            <div class="control select-control"><label for="export-range">Range</label><select id="export-range"><option value="full">Full track / active loop</option><option value="current">Current → end</option></select></div>
-            <button id="export-video" class="video-export-button" type="button">Export Video</button>
-            <div class="button-row">
-              <button id="export-png" class="secondary" type="button">Export PNG</button>
-              <button id="export-json" class="secondary" type="button">Export JSON</button>
+          <div class="collapsible-content" id="sectionExport">
+            <div class="control">
+              <label for="export-file-name">Export File Name</label>
+              <input class="text-input" id="export-file-name" type="text" maxlength="96" spellcheck="false" autocomplete="off" placeholder="Uses loaded audio file name" aria-describedby="export-file-name-hint">
+              <div class="control-hint" id="export-file-name-hint">The file extension is added automatically.</div>
             </div>
-            <div id="export-progress" class="export-progress" hidden>
-              <progress id="export-progress-bar" max="100" value="0"></progress>
-              <div class="progress-meta"><span id="export-stage">Preparing</span><span id="export-percent">0%</span></div>
-              <button id="cancel-export" class="danger" type="button">Cancel Export</button>
+
+            <div class="control-cluster" data-collapsible-title="Export Format">
+              <div class="collapsible-header">
+                <h3>Export Format</h3>
+                <div class="collapsible-header-actions">
+                  <button class="section-reset" data-reset-section="export-format" title="Reset Export Format to defaults" aria-label="Reset Export Format to defaults" type="button">↺</button>
+                </div>
+              </div>
+              <div class="collapsible-content" id="clusterExportFormat">
+                <div class="control">
+                  <label for="export-resolution">Export Resolution</label>
+                  <select id="export-resolution">
+                    <option value="1080">1080</option>
+                    <option value="2k">2K</option>
+                    <option value="4k" selected>4K</option>
+                  </select>
+                </div>
+                <div class="control">
+                  <label for="video-file-type">Video File Type</label>
+                  <select id="video-file-type">
+                    <option value="mp4" selected>MP4</option>
+                    <option value="mkv">MKV</option>
+                  </select>
+                </div>
+                <div class="control">
+                  <label for="video-frame-rate">Video Frame Rate</label>
+                  <select id="video-frame-rate">
+                    <option value="24">24 FPS</option>
+                    <option value="30">30 FPS</option>
+                    <option value="60" selected>60 FPS</option>
+                  </select>
+                </div>
+                <div class="control">
+                  <label for="video-bitrate">Video Bitrate</label>
+                  <select id="video-bitrate">
+                    <option value="6">6 Mbps</option>
+                    <option value="10">10 Mbps</option>
+                    <option value="16">16 Mbps</option>
+                    <option value="24" selected>24 Mbps</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div class="export-estimate" aria-label="Export estimate">
+              <div><span>Duration</span><strong id="export-estimate-duration">—</strong></div>
+              <div><span>Estimated Size</span><strong id="export-estimate-size">—</strong></div>
+              <div><span>Estimated Time</span><strong id="export-estimate-time">—</strong></div>
+            </div>
+
+            <div class="button-row">
+              <button class="video-export-button" id="export-video" type="button">Export Video</button>
+            </div>
+            <div class="button-row">
+              <button class="secondary" id="export-png" type="button">Export PNG</button>
+              <button class="secondary" id="export-json" type="button">Export JSON</button>
+            </div>
+            <div class="button-row">
+              <button class="secondary" id="import-json" type="button">Import JSON</button>
+              <input id="import-json-file" type="file" accept="application/json,.json" hidden>
+            </div>
+            <div class="status-line" data-state="idle" id="settings-status" aria-live="polite">Settings import validates compatible JSON presets.</div>
+            <div class="status-line" data-state="idle" id="export-status" aria-live="polite">MP4 export requires a loaded audio file and a Chromium browser with WebCodecs.</div>
+            <div class="video-export-progress-wrap" id="export-progress-wrap" hidden>
+              <progress id="export-progress" max="100" value="0" aria-label="Video export progress"></progress>
+              <span class="progress-text" id="export-progress-text">0%</span>
+            </div>
+            <div class="export-progress-details" aria-live="polite">
+              <div><span>Stage</span><strong id="export-progress-stage">Idle</strong></div>
+              <div><span>Time</span><strong id="export-progress-time">—</strong></div>
+              <div><span>Frames</span><strong id="export-progress-frames">—</strong></div>
+              <div><span>ETA</span><strong id="export-progress-eta">—</strong></div>
             </div>
           </div>
         </section>
+      </div>
+    </div>
+
+
+    <div id="export-overlay">
+      <div class="export-overlay-card">
+        <div class="export-overlay-title">Exporting Video</div>
+        <div class="video-export-progress-wrap">
+          <progress id="export-overlay-progress" max="100" value="0" aria-label="Video export progress"></progress>
+          <span class="progress-text" id="export-overlay-progress-text">0%</span>
+        </div>
+        <div class="export-overlay-detail" id="export-overlay-detail">Preparing encoder · 0%</div>
+        <div class="export-overlay-stats">
+          <div><span>Stage</span><strong id="export-overlay-stage">Preparing</strong></div>
+          <div><span>Time</span><strong id="export-overlay-time">—</strong></div>
+          <div><span>Frames</span><strong id="export-overlay-frames">—</strong></div>
+          <div><span>ETA</span><strong id="export-overlay-eta">—</strong></div>
+        </div>
+        <button class="secondary" id="export-cancel" type="button">Cancel Export</button>
       </div>
     </div>
 

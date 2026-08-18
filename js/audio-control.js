@@ -10,12 +10,9 @@ export class AudioControl {
         this.frequencyData = null;
         this.timeData = null;
         this.mediaElementSource = null;
-        this.microphoneSource = null;
-        this.microphoneStream = null;
         this.activeAnalysisSource = null;
         this.captureDestination = null;
         this.playbackGain = null;
-        this.inputType = 'none';
         this.isInitialized = false;
         this.isFileLoaded = false;
         this.fileName = '';
@@ -107,7 +104,6 @@ export class AudioControl {
     async loadFile(file) {
         if (!file) return;
         await this.ensureContext();
-        this.stopMicrophone();
         this.pause();
 
         if (this.objectUrl) URL.revokeObjectURL(this.objectUrl);
@@ -117,7 +113,7 @@ export class AudioControl {
         this.fileName = file.name;
         this.isFileLoaded = true;
         this.decodedAudioBuffer = null;
-        this.#useAnalysisSource(this.mediaElementSource, 'file');
+        this.#useAnalysisSource(this.mediaElementSource);
 
         const metadataReady = new Promise((resolve, reject) => {
             const onReady = () => {
@@ -144,58 +140,18 @@ export class AudioControl {
         this.decodedAudioBuffer = decoded;
     }
 
-    async init() {
-        return this.initMicrophone();
-    }
-
-    async initMicrophone() {
-        await this.ensureContext();
-        this.pause();
-        this.stopMicrophone();
-
-        this.microphoneStream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-                echoCancellation: false,
-                autoGainControl: false,
-                noiseSuppression: false,
-            },
-        });
-        this.microphoneSource = this.audioContext.createMediaStreamSource(this.microphoneStream);
-        this.microphoneSource.connect(this.captureDestination);
-        this.#useAnalysisSource(this.microphoneSource, 'microphone');
-        return this.microphoneStream;
-    }
-
-    stopMicrophone() {
-        if (this.inputType === 'microphone' && this.activeAnalysisSource) {
-            try { this.activeAnalysisSource.disconnect(this.analyser); } catch (_) {}
-            this.activeAnalysisSource = null;
-        }
-        if (this.microphoneSource) {
-            try { this.microphoneSource.disconnect(); } catch (_) {}
-            this.microphoneSource = null;
-        }
-        if (this.microphoneStream) {
-            this.microphoneStream.getTracks().forEach((track) => track.stop());
-            this.microphoneStream = null;
-        }
-        if (this.inputType === 'microphone') this.inputType = 'none';
-    }
-
     useFileInput() {
         if (!this.isFileLoaded || !this.mediaElementSource) return;
-        this.stopMicrophone();
-        this.#useAnalysisSource(this.mediaElementSource, 'file');
+        this.#useAnalysisSource(this.mediaElementSource);
     }
 
-    #useAnalysisSource(source, type) {
-        if (this.activeAnalysisSource === source && this.inputType === type) return;
+    #useAnalysisSource(source) {
+        if (this.activeAnalysisSource === source) return;
         if (this.activeAnalysisSource) {
             try { this.activeAnalysisSource.disconnect(this.analyser); } catch (_) {}
         }
         source.connect(this.analyser);
         this.activeAnalysisSource = source;
-        this.inputType = type;
     }
 
     async play() {

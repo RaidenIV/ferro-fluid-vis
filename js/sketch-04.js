@@ -493,6 +493,11 @@ export class Sketch {
             u_positionTexture: this.inFBO.attachments[0],
             u_indicesTexture: this.currentIndicesTexture,
             u_offsetTexture: this.textures.offset,
+            // Gas constant is supplied directly to the pressure shader instead
+            // of relying on the shared std140 block. This keeps the control
+            // responsive across browsers/drivers while leaving the rest of the
+            // simulation parameter block unchanged.
+            u_gasConst: this.simulationParams.GAS_CONST,
         });
         twgl.drawBufferInfo(gl, this.quadBufferInfo);
 
@@ -652,10 +657,6 @@ export class Sketch {
             this.audioLevels = this.audioControl.getAnalysis();
             const reactiveLevel = this.#getReactiveLevel();
             this.ZOOM = Math.max(0.05, Math.min(0.95, this.baseZoom - reactiveLevel * this.audioReactive.cameraZoom * 0.18));
-            if (this.cameraControls.autoRotate) {
-                this.cameraControls.yaw += this.cameraControls.rotateSpeed * (deltaTime / 1000);
-                this.#syncCameraFromControls();
-            }
         } else {
 
             if (this.entryProgress >= this.entryDelay) {
@@ -682,6 +683,17 @@ export class Sketch {
                 if (this.onEntryAnimationDone) this.onEntryAnimationDone();
                 this.isEntryAnimationDone = true;
                 this.ZOOM = this.baseZoom;
+            }
+        }
+
+        // Camera auto-rotation is independent of the entry animation and audio
+        // state so the sidebar toggle always takes effect immediately.
+        if (this.cameraControls.autoRotate) {
+            const speed = Number(this.cameraControls.rotateSpeed);
+            if (Number.isFinite(speed) && speed !== 0) {
+                this.cameraControls.yaw += speed * (deltaTime / 1000);
+                this.cameraControls.yaw = ((this.cameraControls.yaw + 180) % 360 + 360) % 360 - 180;
+                this.#syncCameraFromControls();
             }
         }
 
@@ -814,7 +826,11 @@ export class Sketch {
     }
 
     setCameraSettings(partial = {}) {
-        Object.assign(this.cameraControls, partial);
+        if ('autoRotate' in partial) this.cameraControls.autoRotate = Boolean(partial.autoRotate);
+        if ('yaw' in partial && Number.isFinite(Number(partial.yaw))) this.cameraControls.yaw = Number(partial.yaw);
+        if ('elevation' in partial && Number.isFinite(Number(partial.elevation))) this.cameraControls.elevation = Number(partial.elevation);
+        if ('distance' in partial && Number.isFinite(Number(partial.distance))) this.cameraControls.distance = Number(partial.distance);
+        if ('rotateSpeed' in partial && Number.isFinite(Number(partial.rotateSpeed))) this.cameraControls.rotateSpeed = Number(partial.rotateSpeed);
         this.cameraControls.elevation = Math.max(8, Math.min(72, Number(this.cameraControls.elevation)));
         this.cameraControls.distance = Math.max(0.72, Math.min(2.4, Number(this.cameraControls.distance)));
         this.#syncCameraFromControls();

@@ -1,6 +1,6 @@
 # Ferrofluid Audio Visualizer
 
-Audio-reactive WebGL ferrofluid visualizer with file/microphone analysis, simulation controls, camera controls, and video/image export.
+Audio-reactive WebGL ferrofluid visualizer with file analysis, simulation controls, camera controls, and video/image export.
 
 ## Architecture
 
@@ -9,7 +9,7 @@ This repository is intentionally a static browser project. It does **not** requi
 - `index.html` — page markup and browser import map
 - `style.css` — visualizer/sidebar styling
 - `js/app.js` — UI, playback, controls, and export
-- `js/audio-control.js` — audio loading, microphone input, FFT analysis, and playback
+- `js/audio-control.js` — audio loading, FFT analysis, and playback
 - `js/sketch-04.js` — ferrofluid WebGL simulation/rendering
 - `js/shader/` — GLSL shaders embedded as browser JavaScript modules
 - `assets/` — environment maps and project assets

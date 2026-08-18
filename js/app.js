@@ -49,7 +49,11 @@ function downloadBlob(blob, filename) {
 }
 
 function safeFilename(value, fallback = 'ferrofluid-visualizer') {
-    const clean = String(value || '').trim().replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, '-');
+    const clean = String(value || '')
+        .replace(/\.[a-z0-9]{1,5}$/i, '')
+        .replace(/[\\/:*?"<>|]+/g, '-')
+        .replace(/\s+/g, ' ')
+        .trim();
     return clean || fallback;
 }
 
@@ -203,8 +207,7 @@ $('#audio-file').addEventListener('change', async (event) => {
         $('#play-btn').disabled = false;
         $('#reset-audio').disabled = false;
         $('#loop-btn').disabled = false;
-        const base = file.name.replace(/\.[^.]+$/, '');
-        $('#export-filename').value = `${base}-ferrofluid`;
+        updateExportEstimate();
         setStatus('Audio loaded');
         toast('Audio loaded');
     } catch (error) {
@@ -237,26 +240,6 @@ $('#reset-audio').addEventListener('click', () => {
 
 $('#timeline').addEventListener('input', (event) => {
     audioControl.setCurrentTime(Number(event.target.value));
-});
-
-$('#microphone').addEventListener('click', async () => {
-    try {
-        if (audioControl.inputType === 'microphone') {
-            audioControl.stopMicrophone();
-            if (audioControl.isFileLoaded) audioControl.useFileInput();
-            $('#microphone').textContent = 'Microphone';
-            setStatus(audioControl.isFileLoaded ? 'Audio file active' : 'Microphone stopped');
-            return;
-        }
-        setStatus('Requesting microphone', 'busy');
-        await audioControl.initMicrophone();
-        $('#microphone').textContent = 'Stop Mic';
-        setStatus('Microphone active');
-    } catch (error) {
-        console.error(error);
-        setStatus('Microphone unavailable', 'error');
-        toast('Microphone permission denied');
-    }
 });
 
 bindRange('volume', 'volume-value', (v) => audioControl.setVolume(v / 100), { format: (v) => v.toFixed(0) });
@@ -368,12 +351,14 @@ const sectionDefaults = {
         setControl('iridescence', 1);
     },
     export: () => {
-        $('#export-filename').value = 'ferrofluid-visualizer';
-        setControl('export-format', 'webm', 'change');
-        setControl('export-fps', 60, 'change');
-        setControl('export-resolution', '1920x1080', 'change');
-        setControl('export-bitrate', 16000000, 'change');
-        setControl('export-range', 'full', 'change');
+        $('#export-file-name').value = '';
+        resetExportFormatControls();
+        updateExportEstimate();
+        setSettingsStatus('Settings import validates compatible JSON presets.', 'idle');
+    },
+    'export-format': () => {
+        resetExportFormatControls();
+        updateExportEstimate();
     },
 };
 
@@ -387,19 +372,68 @@ document.querySelectorAll('[data-reset-section]').forEach((button) => {
 });
 
 /* -------------------------------------------------------------------------
-   Export
+   Export — options mirror boid-vis-main(1).zip
 ------------------------------------------------------------------------- */
-function getExportResolution() {
-    const value = $('#export-resolution').value;
-    if (value === 'current') return { width: canvas.width, height: canvas.height, changed: false };
-    const [width, height] = value.split('x').map(Number);
-    return { width, height, changed: true };
+const isFirefoxBrowser = /Firefox\//i.test(navigator.userAgent);
+const exportDefaults = {
+    fileType: isFirefoxBrowser ? 'mkv' : 'mp4',
+    resolution: '4k',
+    frameRate: 60,
+    bitrateMbps: 24,
+};
+
+function resetExportFormatControls() {
+    setControl('export-resolution', exportDefaults.resolution, 'change');
+    setControl('video-file-type', exportDefaults.fileType, 'change');
+    setControl('video-frame-rate', exportDefaults.frameRate, 'change');
+    setControl('video-bitrate', exportDefaults.bitrateMbps, 'change');
 }
 
-function getMime(format) {
-    const candidates = format === 'mp4'
+function getViewportAspect() {
+    const preset = $('#viewport-preset')?.value || 'fill';
+    const aspect = viewportPresets[preset];
+    if (aspect) return aspect;
+    return Math.max(1, window.innerWidth || canvas.clientWidth || 16) /
+        Math.max(1, window.innerHeight || canvas.clientHeight || 9);
+}
+
+function toEvenInteger(value) {
+    const rounded = Math.max(2, Math.round(Number(value) || 2));
+    return rounded % 2 === 0 ? rounded : rounded + 1;
+}
+
+function getExportResolution() {
+    const shortSides = { '1080': 1080, '2k': 1440, '4k': 2160 };
+    const shortSide = shortSides[$('#export-resolution').value] || 2160;
+    const aspect = getViewportAspect();
+    let width;
+    let height;
+    if (aspect >= 1) {
+        height = shortSide;
+        width = height * aspect;
+    } else {
+        width = shortSide;
+        height = width / aspect;
+    }
+    return { width: toEvenInteger(width), height: toEvenInteger(height), changed: true };
+}
+
+function getVideoFileType() {
+    return $('#video-file-type').value === 'mkv' ? 'mkv' : 'mp4';
+}
+
+function getMime(fileType) {
+    const candidates = fileType === 'mp4'
         ? ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4']
-        : ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
+        : [
+            'video/x-matroska;codecs=vp9,opus',
+            'video/x-matroska;codecs=vp8,opus',
+            'video/x-matroska',
+            // Firefox exposes its Matroska/WebM encoder under WebM MIME names.
+            'video/webm;codecs=vp9,opus',
+            'video/webm;codecs=vp8,opus',
+            'video/webm',
+        ];
     return candidates.find((mime) => window.MediaRecorder?.isTypeSupported?.(mime)) || null;
 }
 
@@ -410,33 +444,130 @@ function nextFrames(count = 2) {
     });
 }
 
-function setExportProgress(show, progress = 0, stage = 'Preparing') {
-    $('#export-progress').hidden = !show;
-    const pct = clamp(progress, 0, 1);
-    $('#export-progress-bar').value = pct * 100;
-    $('#export-percent').textContent = `${Math.round(pct * 100)}%`;
-    $('#export-stage').textContent = stage;
+function formatDurationLabel(seconds) {
+    if (!Number.isFinite(seconds) || seconds <= 0) return '—';
+    const total = Math.round(seconds);
+    const minutes = Math.floor(total / 60);
+    const secs = total % 60;
+    return `${minutes}:${String(secs).padStart(2, '0')}`;
 }
 
-$('#export-video').addEventListener('click', async () => {
+function formatBytes(bytes) {
+    if (!Number.isFinite(bytes) || bytes <= 0) return '—';
+    if (bytes >= 1073741824) return `${(bytes / 1073741824).toFixed(2)} GB`;
+    return `${(bytes / 1048576).toFixed(1)} MB`;
+}
+
+function getExportRange() {
+    if (!audioControl.isFileLoaded) return { start: 0, end: 0, duration: 0, active: false };
+    return loopController.getExportRange();
+}
+
+function getExportFileBaseName() {
+    const custom = $('#export-file-name').value.trim();
+    return safeFilename(custom || audioControl.fileName || 'ferrofluid-visualizer');
+}
+
+function setExportStatus(message, state = 'idle') {
+    const status = $('#export-status');
+    status.textContent = message;
+    status.dataset.state = state;
+}
+
+function setSettingsStatus(message, state = 'idle') {
+    const status = $('#settings-status');
+    status.textContent = message;
+    status.dataset.state = state;
+}
+
+function updateExportEstimate() {
+    const range = getExportRange();
+    if (!range.duration) {
+        $('#export-estimate-duration').textContent = '—';
+        $('#export-estimate-size').textContent = '—';
+        $('#export-estimate-time').textContent = '—';
+        return;
+    }
+    const { width, height } = getExportResolution();
+    const fps = Number($('#video-frame-rate').value) || 60;
+    const bitrate = (Number($('#video-bitrate').value) || 24) * 1_000_000;
+    const estimatedBytes = range.duration * (bitrate + 192_000) / 8 * 1.03;
+    const pixelScale = (width * height) / (1920 * 1080);
+    const fpsScale = fps / 30;
+    const estimatedSeconds = range.duration * clamp(0.28 * pixelScale * fpsScale, 0.25, 6);
+    $('#export-estimate-duration').textContent = formatDurationLabel(range.duration);
+    $('#export-estimate-size').textContent = `≈ ${formatBytes(estimatedBytes)}`;
+    $('#export-estimate-time').textContent = `≈ ${formatDurationLabel(estimatedSeconds)}`;
+}
+
+function setExportProgress(show, progress = 0, stage = 'Preparing', meta = {}) {
+    const pct = clamp(progress, 0, 1);
+    const percent = Math.round(pct * 100);
+    $('#export-progress-wrap').hidden = !show;
+    $('#export-progress').value = percent;
+    $('#export-progress-text').textContent = `${percent}%`;
+    $('#export-overlay-progress').value = percent;
+    $('#export-overlay-progress-text').textContent = `${percent}%`;
+    $('#export-overlay-detail').textContent = `${stage} · ${percent}%`;
+    $('#export-progress-stage').textContent = stage;
+    $('#export-overlay-stage').textContent = stage;
+
+    const elapsed = Number(meta.elapsed) || 0;
+    const duration = Number(meta.duration) || 0;
+    const frame = Number(meta.frame) || 0;
+    const totalFrames = Number(meta.totalFrames) || 0;
+    const eta = pct > 0.01 && elapsed > 0 ? Math.max(0, elapsed * (1 - pct) / pct) : 0;
+    const timeLabel = duration ? `${formatDurationLabel(Math.min(duration, pct * duration))} / ${formatDurationLabel(duration)}` : '—';
+    const frameLabel = totalFrames ? `${Math.min(frame, totalFrames)} / ${totalFrames}` : '—';
+    const etaLabel = eta ? formatDurationLabel(eta) : '—';
+    $('#export-progress-time').textContent = timeLabel;
+    $('#export-overlay-time').textContent = timeLabel;
+    $('#export-progress-frames').textContent = frameLabel;
+    $('#export-overlay-frames').textContent = frameLabel;
+    $('#export-progress-eta').textContent = etaLabel;
+    $('#export-overlay-eta').textContent = etaLabel;
+}
+
+function setExportUiActive(active) {
+    $('#export-overlay').classList.toggle('active', active);
+    $('#export-video').textContent = active ? 'Cancel Video Export' : 'Export Video';
+    $('#export-video').classList.toggle('is-cancel', active);
+    $('#export-png').disabled = active;
+    $('#export-json').disabled = active;
+    $('#import-json').disabled = active;
+    $('#video-file-type').disabled = active;
+    $('#video-frame-rate').disabled = active;
+    $('#video-bitrate').disabled = active;
+    $('#export-resolution').disabled = active;
+}
+
+async function exportVideo() {
+    if (activeRecorder) {
+        cancelRequested = true;
+        return;
+    }
     if (!audioControl.isFileLoaded) {
+        setExportStatus('Load an audio file before video export.', 'error');
         toast('Load an audio file before video export');
         return;
     }
     if (!window.MediaRecorder || !canvas.captureStream) {
+        setExportStatus('Video export is not supported in this browser.', 'error');
         toast('Video export is not supported in this browser');
         return;
     }
 
-    const format = $('#export-format').value;
-    const mimeType = getMime(format);
+    const fileType = getVideoFileType();
+    const mimeType = getMime(fileType);
     if (!mimeType) {
-        toast(`${format.toUpperCase()} recording is not supported in this browser`);
+        setExportStatus(`${fileType.toUpperCase()} export is not supported by this browser.`, 'error');
+        toast(`${fileType.toUpperCase()} export is not supported in this browser`);
         return;
     }
 
-    const duration = audioControl.duration;
-    if (!duration) {
+    const range = getExportRange();
+    if (!range.duration) {
+        setExportStatus('Audio duration is unavailable.', 'error');
         toast('Audio duration is unavailable');
         return;
     }
@@ -447,32 +578,22 @@ $('#export-video').addEventListener('click', async () => {
         nativeLoop: audioControl.audioElement.loop,
         muted: audioControl.monitorMuted,
     };
-
-    const selectedLoop = loopController.getExportRange();
-    const rangeMode = $('#export-range').value;
-    let startTime;
-    let endTime;
-    if (rangeMode === 'full' && selectedLoop.active) {
-        startTime = selectedLoop.start;
-        endTime = selectedLoop.end;
-    } else if (rangeMode === 'current') {
-        startTime = Math.min(previous.time, Math.max(0, duration - 0.05));
-        endTime = selectedLoop.active && startTime < selectedLoop.end ? selectedLoop.end : duration;
-    } else {
-        startTime = 0;
-        endTime = duration;
-    }
-
-    const exportDuration = Math.max(0.05, endTime - startTime);
-    const fps = Number($('#export-fps').value);
-    const bitrate = Number($('#export-bitrate').value);
+    const startTime = range.start;
+    const endTime = range.end;
+    const exportDuration = range.duration;
+    const fps = Number($('#video-frame-rate').value) || 60;
+    const bitrate = (Number($('#video-bitrate').value) || 24) * 1_000_000;
     const resolution = getExportResolution();
+    const totalFrames = Math.max(1, Math.ceil(exportDuration * fps));
     cancelRequested = false;
+    const startedAt = performance.now();
 
     setStatus('Exporting video', 'busy');
-    setExportProgress(true, 0, 'Preparing');
-    $('#export-video').disabled = true;
+    setExportUiActive(true);
+    setExportStatus(`Preparing ${fileType.toUpperCase()} encoder · ${fps} FPS · ${(bitrate / 1_000_000).toFixed(0)} Mbps…`, 'active');
+    setExportProgress(true, 0.01, 'Preparing', { duration: exportDuration, totalFrames });
 
+    let canvasStream = null;
     try {
         audioControl.pause();
         audioControl.useFileInput();
@@ -480,12 +601,10 @@ $('#export-video').addEventListener('click', async () => {
         audioControl.setMuted(true);
         audioControl.setCurrentTime(startTime);
 
-        if (resolution.changed) {
-            sketch.setDrawingBufferSize(resolution.width, resolution.height);
-            await nextFrames(2);
-        }
+        sketch.setDrawingBufferSize(resolution.width, resolution.height);
+        await nextFrames(2);
 
-        const canvasStream = canvas.captureStream(fps);
+        canvasStream = canvas.captureStream(fps);
         const audioStream = audioControl.getCaptureStream();
         const tracks = [...canvasStream.getVideoTracks(), ...(audioStream ? audioStream.getAudioTracks() : [])];
         const combinedStream = new MediaStream(tracks);
@@ -496,7 +615,6 @@ $('#export-video').addEventListener('click', async () => {
         recorder.addEventListener('dataavailable', (event) => {
             if (event.data?.size) chunks.push(event.data);
         });
-
         const stopped = new Promise((resolve, reject) => {
             recorder.addEventListener('stop', resolve, { once: true });
             recorder.addEventListener('error', (event) => reject(event.error || new Error('Recording failed')), { once: true });
@@ -504,12 +622,18 @@ $('#export-video').addEventListener('click', async () => {
 
         recorder.start(1000);
         await audioControl.play();
-        setExportProgress(true, 0, 'Recording');
+        setExportStatus(`Recording ${fileType.toUpperCase()}…`, 'active');
 
         await new Promise((resolve) => {
             const check = () => {
                 const progress = clamp((audioControl.currentTime - startTime) / exportDuration, 0, 1);
-                setExportProgress(true, progress, cancelRequested ? 'Cancelling' : 'Recording');
+                const elapsed = (performance.now() - startedAt) / 1000;
+                setExportProgress(true, Math.max(0.01, progress * 0.97), cancelRequested ? 'Cancelling' : 'Encoding frames', {
+                    elapsed,
+                    duration: exportDuration,
+                    frame: Math.round(progress * totalFrames),
+                    totalFrames,
+                });
                 if (cancelRequested || audioControl.currentTime >= endTime - 0.025 || audioControl.audioElement.ended) {
                     resolve();
                     return;
@@ -522,28 +646,39 @@ $('#export-video').addEventListener('click', async () => {
         audioControl.pause();
         if (recorder.state !== 'inactive') recorder.stop();
         await stopped;
-        canvasStream.getTracks().forEach((track) => track.stop());
 
         if (!cancelRequested) {
-            setExportProgress(true, 1, 'Finalizing');
+            setExportProgress(true, 0.99, `Finalizing ${fileType.toUpperCase()}`, {
+                elapsed: (performance.now() - startedAt) / 1000,
+                duration: exportDuration,
+                frame: totalFrames,
+                totalFrames,
+            });
             const blob = new Blob(chunks, { type: mimeType });
-            const actualExtension = mimeType.startsWith('video/mp4') ? 'mp4' : 'webm';
-            downloadBlob(blob, `${safeFilename($('#export-filename').value)}.${actualExtension}`);
+            downloadBlob(blob, `${getExportFileBaseName()}.${fileType}`);
+            setExportProgress(true, 1, 'Complete', {
+                elapsed: (performance.now() - startedAt) / 1000,
+                duration: exportDuration,
+                frame: totalFrames,
+                totalFrames,
+            });
+            setExportStatus(`${fileType.toUpperCase()} exported · ${resolution.width}×${resolution.height} · ${formatBytes(blob.size)}`, 'done');
             toast('Video export complete');
         } else {
+            setExportStatus('Video export cancelled.', 'idle');
             toast('Video export cancelled');
         }
     } catch (error) {
         console.error(error);
+        setExportStatus(`VIDEO EXPORT ERROR / ${error.message}`, 'error');
         toast('Video export failed');
         setStatus('Export failed', 'error');
     } finally {
         activeRecorder = null;
-        if (resolution.changed) {
-            sketch.restoreDisplayResolution();
-            await nextFrames(1);
-            fitViewport();
-        }
+        canvasStream?.getTracks().forEach((track) => track.stop());
+        sketch.restoreDisplayResolution();
+        await nextFrames(1);
+        fitViewport();
         audioControl.audioElement.loop = previous.nativeLoop;
         audioControl.setMuted(previous.muted);
         audioControl.setCurrentTime(previous.time);
@@ -551,42 +686,39 @@ $('#export-video').addEventListener('click', async () => {
         if (previous.playing) {
             try { await audioControl.play(); } catch (_) {}
         }
-        $('#export-video').disabled = false;
+        setExportUiActive(false);
         setExportProgress(false);
         setStatus(cancelRequested ? 'Export cancelled' : 'Visualizer ready');
+        updateExportEstimate();
     }
-});
+}
 
-$('#cancel-export').addEventListener('click', () => {
-    cancelRequested = true;
-    if (activeRecorder && activeRecorder.state === 'paused') activeRecorder.resume();
-});
+$('#export-video').addEventListener('click', exportVideo);
+$('#export-cancel').addEventListener('click', () => { cancelRequested = true; });
 
 $('#export-png').addEventListener('click', async () => {
     const resolution = getExportResolution();
     setStatus('Exporting PNG', 'busy');
     try {
-        if (resolution.changed) {
-            sketch.setDrawingBufferSize(resolution.width, resolution.height);
-            await nextFrames(2);
-        }
+        sketch.setDrawingBufferSize(resolution.width, resolution.height);
+        await nextFrames(2);
         const blob = await new Promise((resolve, reject) => canvas.toBlob((value) => value ? resolve(value) : reject(new Error('PNG capture failed')), 'image/png'));
-        downloadBlob(blob, `${safeFilename($('#export-filename').value)}.png`);
+        downloadBlob(blob, `${getExportFileBaseName()}-frame.png`);
+        setExportStatus(`PNG exported at ${resolution.width}×${resolution.height}.`, 'done');
         toast('PNG exported');
     } catch (error) {
         console.error(error);
+        setExportStatus(`EXPORT ERROR / ${error.message}`, 'error');
         toast('PNG export failed');
     } finally {
-        if (resolution.changed) {
-            sketch.restoreDisplayResolution();
-            fitViewport();
-        }
+        sketch.restoreDisplayResolution();
+        fitViewport();
         setStatus('Visualizer ready');
     }
 });
 
-$('#export-json').addEventListener('click', () => {
-    const payload = {
+function buildSettingsPayload() {
+    return {
         schemaVersion: 1,
         app: 'ferrofluid-audio-reactive',
         settings: sketch.getSerializableState(),
@@ -601,24 +733,112 @@ $('#export-json').addEventListener('click', () => {
         },
         viewport: $('#viewport-preset').value,
         export: {
-            format: $('#export-format').value,
+            fileType: getVideoFileType(),
             resolution: $('#export-resolution').value,
-            fps: Number($('#export-fps').value),
-            bitrate: Number($('#export-bitrate').value),
-            range: $('#export-range').value,
-            filename: $('#export-filename').value,
+            frameRate: Number($('#video-frame-rate').value),
+            bitrateMbps: Number($('#video-bitrate').value),
+            fileName: $('#export-file-name').value,
         },
     };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-    downloadBlob(blob, `${safeFilename($('#export-filename').value)}.json`);
+}
+
+$('#export-json').addEventListener('click', () => {
+    const blob = new Blob([JSON.stringify(buildSettingsPayload(), null, 2)], { type: 'application/json' });
+    downloadBlob(blob, `${getExportFileBaseName()}.json`);
+    setSettingsStatus('Settings exported as versioned JSON.', 'done');
     toast('Settings JSON exported');
 });
 
-const mp4Option = $('#export-format').querySelector('option[value="mp4"]');
-if (window.MediaRecorder && !getMime('mp4')) {
-    mp4Option.disabled = true;
-    mp4Option.textContent = 'MP4 (unsupported)';
+function applyImportedSettings(payload) {
+    if (!payload || payload.schemaVersion !== 1 || payload.app !== 'ferrofluid-audio-reactive') {
+        throw new Error('Incompatible settings file.');
+    }
+    const settings = payload.settings || {};
+    const reactive = settings.audioReactive || {};
+    const simulation = settings.simulation || {};
+    const pointer = settings.pointer || {};
+    const camera = settings.camera || {};
+    const appearance = settings.appearance || {};
+    const audio = payload.audio || {};
+    const exportSettings = payload.export || {};
+
+    if (settings.baseZoom != null) setControl('base-zoom', settings.baseZoom);
+    if (reactive.enabled != null) setControl('reactive-enabled', reactive.enabled, 'change');
+    if (reactive.band) setControl('reaction-band', reactive.band, 'change');
+    if (reactive.spikeHeight != null) setControl('spike-height', reactive.spikeHeight);
+    if (reactive.spikeSharpness != null) setControl('spike-sharpness', reactive.spikeSharpness);
+    if (reactive.agitation != null) setControl('agitation', reactive.agitation);
+    if (reactive.cameraZoom != null) setControl('camera-pulse', reactive.cameraZoom);
+    if (simulation.MASS != null) setControl('mass', simulation.MASS);
+    if (simulation.REST_DENS != null) setControl('density', simulation.REST_DENS);
+    if (simulation.GAS_CONST != null) setControl('gas', simulation.GAS_CONST);
+    if (simulation.VISC != null) setControl('viscosity', simulation.VISC);
+    if (simulation.STEPS != null) setControl('steps', simulation.STEPS);
+    if (pointer.RADIUS != null) setControl('pointer-radius', pointer.RADIUS);
+    if (pointer.STRENGTH != null) setControl('pointer-strength', pointer.STRENGTH);
+    if (camera.yaw != null) setControl('yaw', camera.yaw);
+    if (camera.elevation != null) setControl('elevation', camera.elevation);
+    if (camera.distance != null) setControl('distance', camera.distance);
+    if (camera.autoRotate != null) setControl('auto-rotate', camera.autoRotate, 'change');
+    if (camera.rotateSpeed != null) setControl('rotate-speed', camera.rotateSpeed);
+    if (appearance.backgroundColor) setControl('background-color', appearance.backgroundColor);
+    if (appearance.materialBrightness != null) setControl('brightness', appearance.materialBrightness);
+    if (appearance.iridescence != null) setControl('iridescence', appearance.iridescence);
+    if (audio.fftSize != null) setControl('fft-size', audio.fftSize, 'change');
+    if (audio.sensitivity != null) setControl('sensitivity', audio.sensitivity);
+    if (audio.smoothing != null) setControl('smoothing', audio.smoothing);
+    if (audio.threshold != null) setControl('threshold', audio.threshold);
+    if (audio.volume != null) setControl('volume', audio.volume);
+    if (audio.muted != null) setControl('mute-audio', audio.muted, 'change');
+    if (payload.viewport) setControl('viewport-preset', payload.viewport, 'change');
+    if (exportSettings.fileType) setControl('video-file-type', exportSettings.fileType, 'change');
+    if (exportSettings.resolution) setControl('export-resolution', exportSettings.resolution, 'change');
+    if (exportSettings.frameRate != null) setControl('video-frame-rate', exportSettings.frameRate, 'change');
+    if (exportSettings.bitrateMbps != null) setControl('video-bitrate', exportSettings.bitrateMbps, 'change');
+    if (typeof exportSettings.fileName === 'string') $('#export-file-name').value = exportSettings.fileName;
+    syncCameraUI();
+    updateExportEstimate();
 }
+
+$('#import-json').addEventListener('click', () => $('#import-json-file').click());
+$('#import-json-file').addEventListener('change', async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    try {
+        const payload = JSON.parse(await file.text());
+        applyImportedSettings(payload);
+        setSettingsStatus('Settings imported successfully.', 'done');
+        toast('Settings imported');
+    } catch (error) {
+        console.error(error);
+        setSettingsStatus(`IMPORT ERROR / ${error.message}`, 'error');
+        toast('Settings import failed');
+    }
+});
+
+['export-resolution', 'video-file-type', 'video-frame-rate', 'video-bitrate'].forEach((id) => {
+    $(`#${id}`).addEventListener('change', () => {
+        updateExportEstimate();
+        const fileType = getVideoFileType();
+        if (isFirefoxBrowser && fileType === 'mp4') {
+            setExportStatus('Firefox cannot reliably export MP4. Select MKV for Firefox export.', 'error');
+        } else {
+            setExportStatus(`${fileType.toUpperCase()} export requires a loaded audio file and browser video encoding support.`, 'idle');
+        }
+    });
+});
+window.addEventListener('visualizer-loop-changed', updateExportEstimate);
+$('#viewport-preset').addEventListener('change', updateExportEstimate);
+
+resetExportFormatControls();
+updateExportEstimate();
+setExportStatus(
+    isFirefoxBrowser
+        ? 'Firefox export defaults to MKV. MP4 is best exported in Chrome or Edge.'
+        : 'MP4 export requires a loaded audio file and browser video encoding support.',
+    'idle'
+);
 
 /* -------------------------------------------------------------------------
    Runtime UI synchronization
