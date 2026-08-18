@@ -1,0 +1,1 @@
+export default "#version 300 es\n\nprecision highp float;\n\nin float v_velocity;\nflat in vec3 v_color;\n\nout vec4 outColor;\n\nvoid main() {\n    vec2 c = gl_PointCoord * 2. - 1.;\n    float mask = 1. - smoothstep(0.7, 0.9, length(c));\n    outColor = vec4(0.4 * v_velocity, 0.9, 1., .8) * mask;\n    outColor = vec4(v_color, 1.) * mask;\n}";

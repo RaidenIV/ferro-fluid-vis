@@ -1,0 +1,1 @@
+export default "#version 300 es\n\nprecision highp float;\n\nuniform sampler2D u_heightMapTexture;\n\nout vec4 outColor;\n\nin vec2 v_uv;\n\nvoid main() {\n    outColor = vec4(texture(u_heightMapTexture, v_uv).r);\n}";
