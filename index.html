@@ -23,7 +23,6 @@
 </head>
 <body>
   <div class="visualizer-container" id="visualizer-container">
-    <div class="aigox-label" aria-label="AIGOX Software">AIGOX SOFTWARE</div>
     <div id="canvas-frame">
       <canvas id="visualizer-canvas"></canvas>
       <canvas id="hud-canvas" aria-hidden="true"></canvas>
@@ -110,12 +109,12 @@
           </div>
         </section>
 
-        <section class="section" data-section="audio">
+        <section class="section is-collapsed" data-section="audio">
           <div class="collapsible-header">
             <h2 tabindex="0">Audio Reactivity</h2>
             <div class="collapsible-header-actions">
               <button class="section-reset" data-reset-section="audio" title="Reset Audio Reactivity" type="button">↺</button>
-              <button class="collapse-toggle" aria-expanded="true" title="Collapse Audio Reactivity" type="button">−</button>
+              <button class="collapse-toggle" aria-expanded="false" title="Expand Audio Reactivity" type="button">+</button>
             </div>
           </div>
           <div class="collapsible-content">
@@ -156,12 +155,12 @@
           </div>
         </section>
 
-        <section class="section" data-section="ferrofluid">
+        <section class="section is-collapsed" data-section="ferrofluid">
           <div class="collapsible-header">
             <h2 tabindex="0">Ferrofluid</h2>
             <div class="collapsible-header-actions">
               <button class="section-reset" data-reset-section="ferrofluid" title="Reset Ferrofluid" type="button">↺</button>
-              <button class="collapse-toggle" aria-expanded="true" title="Collapse Ferrofluid" type="button">−</button>
+              <button class="collapse-toggle" aria-expanded="false" title="Expand Ferrofluid" type="button">+</button>
             </div>
           </div>
           <div class="collapsible-content">
@@ -425,8 +424,6 @@
       </div>
     </div>
 
-    <div class="viewport-brand">FERROFLUID</div>
-    <div class="interaction-hint">LEFT DRAG · DISTURB FLUID &nbsp;&nbsp; RIGHT / SHIFT DRAG · ORBIT &nbsp;&nbsp; WHEEL · ZOOM</div>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
   </div>
 </body>

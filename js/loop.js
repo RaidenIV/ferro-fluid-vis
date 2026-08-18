@@ -558,19 +558,19 @@ const galaxyLoopController = (() => {
           $('popup-bpm-input').disabled = false;
           $('popup-stat-beat').textContent = (60 / popupBpm).toFixed(3) + 's';
 
-          // If an existing loop is active, preserve it exactly. Otherwise build
-          // the initial Binary Tower-style bar selection from the fallback BPM.
-          if (state.audioLoop && state.loopEnd > state.loopStart) {
+          // If an existing loop is active, restore the exact BPM and loop-length
+          // values that the user committed with Apply Loop. Do not derive the bar
+          // count again from the selected duration; the editor must reopen with
+          // the same values the user applied.
+          const hadExistingLoop = Boolean(state.audioLoop && state.loopEnd > state.loopStart);
+          if (hadExistingLoop) {
               popupLoopStart = state.loopStart;
               popupLoopEnd   = state.loopEnd;
-              if (state.loopBpm > 0) {
-                  popupBpm = clamp(state.loopBpm, 40, 300);
-                  $('popup-bpm-input').value = popupBpm;
-                  $('popup-stat-beat').textContent = (60 / popupBpm).toFixed(3) + 's';
-                  const bd = (60 / popupBpm) * 4;
-                  popupLoopBars = Math.max(1, Math.round((popupLoopEnd - popupLoopStart) / bd));
-                  $('popup-bars-val').value = popupLoopBars;
-              }
+              popupBpm = clamp(state.loopBpm || popupBpm || 120, 40, 300);
+              popupLoopBars = Math.max(1, Math.round(state.loopBars || popupLoopBars || 4));
+              $('popup-bpm-input').value = popupBpm;
+              $('popup-bars-val').value = popupLoopBars;
+              $('popup-stat-beat').textContent = (60 / popupBpm).toFixed(3) + 's';
           } else {
               popupLoopStart = 0;
               updateLoopEnd($);
@@ -597,8 +597,11 @@ const galaxyLoopController = (() => {
           return;
       }
 
-      // The editor is usable now; tempo refinement happens in the background.
+      // The editor is usable now. Once a loop has been applied, its committed
+      // BPM and bar count are authoritative and must survive reopening the modal;
+      // skip background tempo refinement so it cannot overwrite those values.
       analyzing?.classList.remove('show');
+      if (hadExistingLoop) return;
 
       const bufferAtDetectionStart = popupBuffer;
       try {
@@ -611,20 +614,10 @@ const galaxyLoopController = (() => {
 
           if (!popupOpen || popupBuffer !== bufferAtDetectionStart) return;
 
-          const hadExistingLoop = Boolean(
-              state.audioLoop && state.loopEnd > state.loopStart
-          );
           popupBpm = clamp(detectedBpm, 40, 300);
           $('popup-bpm-input').value = popupBpm;
           $('popup-stat-beat').textContent = (60 / popupBpm).toFixed(3) + 's';
-
-          if (hadExistingLoop) {
-              const barDuration = (60 / popupBpm) * 4;
-              popupLoopBars = Math.max(1, Math.round((popupLoopEnd - popupLoopStart) / barDuration));
-              $('popup-bars-val').value = popupLoopBars;
-          } else {
-              updateLoopEnd($);
-          }
+          updateLoopEnd($);
 
           syncBarsLimit($);
           updateHandles($);
