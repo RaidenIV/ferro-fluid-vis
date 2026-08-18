@@ -473,10 +473,15 @@ export class Sketch {
                     CELL_SIZE: this.simulationParams.H
                 }
             );
+            // The simulation block is declared by both the pressure and force
+            // programs. Bind the same updated UBO to each program so Mass,
+            // Rest Density, Gas Constant, and Viscosity change the live solver.
             twgl.setUniformBlock(gl, this.pressurePrg, this.simulationParamsUBO);
+            twgl.setUniformBlock(gl, this.forcePrg, this.simulationParamsUBO);
             this.simulationParamsNeedUpdate = false;
         } else {
             twgl.bindUniformBlock(gl, this.pressurePrg, this.simulationParamsUBO);
+            twgl.bindUniformBlock(gl, this.forcePrg, this.simulationParamsUBO);
         }
 
 
@@ -784,7 +789,13 @@ export class Sketch {
     }
 
     setSimulationSettings(partial = {}) {
-        Object.assign(this.simulationParams, partial);
+        const allowed = ['MASS', 'REST_DENS', 'GAS_CONST', 'VISC', 'STEPS'];
+        for (const key of allowed) {
+            if (!(key in partial)) continue;
+            const value = Number(partial[key]);
+            if (!Number.isFinite(value)) continue;
+            this.simulationParams[key] = key === 'STEPS' ? Math.max(0, Math.round(value)) : value;
+        }
         this.#updateSimulationParams();
     }
 

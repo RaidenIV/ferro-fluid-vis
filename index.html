@@ -1,10 +1,15 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
+  <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <meta name="theme-color" content="#050505">
+  <meta name="theme-color" content="#000000">
   <title>Ferrofluid Audio Visualizer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./style.css">
+  <link rel="stylesheet" href="./loop-editor.css">
   <script type="importmap">
     {
       "imports": {
@@ -15,63 +20,122 @@
     }
   </script>
   <script type="module" src="./js/app.js"></script>
-  <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
-  <div id="app-shell">
-    <aside id="sidebar" aria-label="Visualizer controls">
-      <div class="sidebar-scroll">
-        <header class="brand-block">
-          <div class="eyebrow">AUDIO VISUALIZER</div>
-          <h1>FERROFLUID</h1>
-          <div id="app-status" class="status-line"><span class="status-dot"></span><span>Ready</span></div>
-        </header>
+  <div class="visualizer-container" id="visualizer-container">
+    <div id="canvas-frame">
+      <canvas id="visualizer-canvas"></canvas>
+    </div>
 
-        <section class="control-section open" data-section>
-          <button class="section-title" type="button" data-section-toggle>
-            <span>File and Playback</span><span class="section-chevron">⌄</span>
-          </button>
-          <div class="section-body">
-            <input id="audio-file" class="sr-only" type="file" accept="audio/*">
-            <button id="load-audio" class="button primary wide" type="button">Load Audio</button>
-            <div id="track-name" class="track-name">No audio loaded</div>
+    <div id="controls" aria-label="Visualizer controls">
+      <div class="logo-top">
+        <img src="./assets/logo.svg" alt="Ferrofluid" class="logo">
+      </div>
+
+      <div class="header-container">
+        <div>
+          <div class="app-title">Ferrofluid Visualizer</div>
+          <div id="app-status" class="app-status"><span class="status-dot"></span><span>Ready</span></div>
+        </div>
+        <button class="minimize-btn" id="minimize-btn" title="Collapse panel" type="button">−</button>
+      </div>
+
+      <div class="controls-content">
+        <section class="section" data-section="playback">
+          <div class="collapsible-header">
+            <h2 tabindex="0">File and Playback</h2>
+            <div class="collapsible-header-actions">
+              <button class="section-reset" data-reset-section="playback" title="Reset File and Playback" type="button">↺</button>
+              <button class="collapse-toggle" aria-expanded="true" title="Collapse File and Playback" type="button">−</button>
+            </div>
+          </div>
+          <div class="collapsible-content">
+            <label class="file-button" id="load-audio">
+              <span>Load Audio File</span>
+              <input id="audio-file" type="file" accept="audio/*,.wav,.mp3,.m4a,.aac,.ogg,.flac">
+            </label>
+            <div class="info">
+              <div class="section-kicker">Audio File</div>
+              <div id="track-name" class="info-value">No audio loaded</div>
+            </div>
+
             <div class="button-row">
-              <button id="play-pause" class="button" type="button" disabled>Play</button>
-              <button id="reset-audio" class="button" type="button" disabled>Reset</button>
-              <button id="microphone" class="button" type="button">Mic</button>
+              <button id="play-btn" class="play" type="button" disabled>▶ Play</button>
+              <button id="loop-btn" class="secondary" type="button" disabled aria-pressed="false">Loop</button>
             </div>
-            <label class="control compact timeline-control">
-              <span class="control-label"><span>Timeline</span><span id="time-readout">00:00 / 00:00</span></span>
+            <div class="button-row">
+              <button id="reset-audio" class="secondary" type="button" disabled>Reset</button>
+              <button id="microphone" class="secondary" type="button">Microphone</button>
+            </div>
+
+            <div class="control">
+              <label for="timeline">Timeline</label>
+              <div class="value-readout" id="time-readout">00:00 / 00:00</div>
               <input id="timeline" type="range" min="0" max="1" step="0.01" value="0" disabled>
-            </label>
-            <div class="inline-controls">
-              <label class="toggle-control"><input id="loop-audio" type="checkbox" checked><span class="toggle"></span><span>Loop audio</span></label>
-              <label class="toggle-control"><input id="mute-audio" type="checkbox"><span class="toggle"></span><span>Mute</span></label>
             </div>
-            <label class="control compact">
-              <span class="control-label"><span>Volume</span><output id="volume-value">85%</output></span>
-              <input id="volume" type="range" min="0" max="1" step="0.01" value="0.85">
-            </label>
+
+            <div class="control">
+              <label for="volume">Volume</label>
+              <div class="value-editor"><input class="value-input" id="volume-value" type="number" min="0" max="100" step="1" value="85"><span class="value-suffix">%</span></div>
+              <input id="volume" type="range" min="0" max="100" step="1" value="85">
+            </div>
+
+            <div class="control toggle-control playback-mute-control">
+              <label for="mute-audio">Mute</label>
+              <label class="switch" for="mute-audio" aria-label="Mute audio">
+                <input class="switch-input" id="mute-audio" type="checkbox" role="switch">
+                <span class="switch-track" aria-hidden="true"></span>
+              </label>
+            </div>
           </div>
         </section>
 
-        <section class="control-section open" data-section>
-          <button class="section-title" type="button" data-section-toggle>
-            <span>Audio Reactivity</span><span class="section-chevron">⌄</span>
-          </button>
-          <div class="section-body">
-            <label class="toggle-control"><input id="reactive-enabled" type="checkbox" checked><span class="toggle"></span><span>Audio reactive</span></label>
-            <label class="control select-control">
-              <span class="control-label">Reaction source</span>
+        <section class="section is-collapsed" data-section="viewport">
+          <div class="collapsible-header">
+            <h2 tabindex="0">Viewport</h2>
+            <div class="collapsible-header-actions">
+              <button class="section-reset" data-reset-section="viewport" title="Reset Viewport" type="button">↺</button>
+              <button class="collapse-toggle" aria-expanded="false" title="Expand Viewport" type="button">+</button>
+            </div>
+          </div>
+          <div class="collapsible-content" id="sectionViewport">
+            <div class="control viewport-control">
+              <label for="viewport-preset">Viewport Format</label>
+              <select id="viewport-preset">
+                <option value="fill" selected>Fill Window</option>
+                <option value="landscape">Landscape — 16:9</option>
+                <option value="square">Square — 1:1</option>
+                <option value="portrait">Portrait — 9:16</option>
+              </select>
+              <div class="control-hint">Frames the live visualization to the selected aspect ratio.</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" data-section="audio">
+          <div class="collapsible-header">
+            <h2 tabindex="0">Audio Reactivity</h2>
+            <div class="collapsible-header-actions">
+              <button class="section-reset" data-reset-section="audio" title="Reset Audio Reactivity" type="button">↺</button>
+              <button class="collapse-toggle" aria-expanded="true" title="Collapse Audio Reactivity" type="button">−</button>
+            </div>
+          </div>
+          <div class="collapsible-content">
+            <div class="control toggle-control">
+              <label for="reactive-enabled">Audio Reactive</label>
+              <label class="switch" for="reactive-enabled"><input class="switch-input" id="reactive-enabled" type="checkbox" role="switch" checked><span class="switch-track"></span></label>
+            </div>
+            <div class="control select-control">
+              <label for="reaction-band">Reaction Source</label>
               <select id="reaction-band">
                 <option value="overall">Overall</option>
                 <option value="bass">Bass</option>
                 <option value="mids">Mids</option>
                 <option value="treble">Treble</option>
               </select>
-            </label>
-            <label class="control select-control">
-              <span class="control-label">Audio resolution</span>
+            </div>
+            <div class="control select-control">
+              <label for="fft-size">Audio Resolution</label>
               <select id="fft-size">
                 <option value="256">1× / 256 FFT</option>
                 <option value="512">2× / 512 FFT</option>
@@ -81,10 +145,10 @@
                 <option value="8192">32× / 8192 FFT</option>
                 <option value="16384">64× / 16384 FFT</option>
               </select>
-            </label>
-            <label class="control compact"><span class="control-label"><span>Sensitivity</span><output id="sensitivity-value">1.35×</output></span><input id="sensitivity" type="range" min="0.25" max="3" step="0.05" value="1.35"></label>
-            <label class="control compact"><span class="control-label"><span>Smoothing</span><output id="smoothing-value">72%</output></span><input id="smoothing" type="range" min="0" max="0.95" step="0.01" value="0.72"></label>
-            <label class="control compact"><span class="control-label"><span>Noise threshold</span><output id="threshold-value">0.025</output></span><input id="threshold" type="range" min="0" max="0.15" step="0.005" value="0.025"></label>
+            </div>
+            <div class="control"><label for="sensitivity">Sensitivity</label><div class="value-editor"><input class="value-input" id="sensitivity-value" type="number" min="0.25" max="3" step="0.05" value="1.35"><span class="value-suffix">×</span></div><input id="sensitivity" type="range" min="0.25" max="3" step="0.05" value="1.35"></div>
+            <div class="control"><label for="smoothing">Smoothing</label><div class="value-editor"><input class="value-input" id="smoothing-value" type="number" min="0" max="95" step="1" value="72"><span class="value-suffix">%</span></div><input id="smoothing" type="range" min="0" max="0.95" step="0.01" value="0.72"></div>
+            <div class="control"><label for="threshold">Noise Threshold</label><div class="value-editor"><input class="value-input" id="threshold-value" type="number" min="0" max="0.15" step="0.005" value="0.025"></div><input id="threshold" type="range" min="0" max="0.15" step="0.005" value="0.025"></div>
             <div class="meter-grid" aria-label="Audio levels">
               <div class="meter"><span>BASS</span><i><b id="meter-bass"></b></i></div>
               <div class="meter"><span>MIDS</span><i><b id="meter-mids"></b></i></div>
@@ -94,101 +158,108 @@
           </div>
         </section>
 
-        <section class="control-section open" data-section>
-          <button class="section-title" type="button" data-section-toggle>
-            <span>Ferrofluid</span><span class="section-chevron">⌄</span>
-          </button>
-          <div class="section-body">
-            <label class="control compact"><span class="control-label"><span>Base shape</span><output id="base-zoom-value">0.50</output></span><input id="base-zoom" type="range" min="0.15" max="0.85" step="0.01" value="0.50"></label>
-            <label class="control compact"><span class="control-label"><span>Spike height</span><output id="spike-height-value">1.35×</output></span><input id="spike-height" type="range" min="0" max="3" step="0.05" value="1.35"></label>
-            <label class="control compact"><span class="control-label"><span>Spike sharpness</span><output id="spike-sharpness-value">0.45×</output></span><input id="spike-sharpness" type="range" min="0" max="2" step="0.05" value="0.45"></label>
-            <label class="control compact"><span class="control-label"><span>Fluid agitation</span><output id="agitation-value">0.65×</output></span><input id="agitation" type="range" min="0" max="2" step="0.05" value="0.65"></label>
-            <label class="control compact"><span class="control-label"><span>Camera pulse</span><output id="camera-pulse-value">0.00×</output></span><input id="camera-pulse" type="range" min="0" max="1.5" step="0.05" value="0"></label>
-          </div>
-        </section>
-
-        <section class="control-section" data-section>
-          <button class="section-title" type="button" data-section-toggle>
-            <span>Simulation</span><span class="section-chevron">⌄</span>
-          </button>
-          <div class="section-body">
-            <label class="control compact"><span class="control-label"><span>Mass</span><output id="mass-value">1.00</output></span><input id="mass" type="range" min="0.1" max="5" step="0.05" value="1"></label>
-            <label class="control compact"><span class="control-label"><span>Rest density</span><output id="density-value">1.80</output></span><input id="density" type="range" min="0.2" max="5" step="0.05" value="1.8"></label>
-            <label class="control compact"><span class="control-label"><span>Gas constant</span><output id="gas-value">40</output></span><input id="gas" type="range" min="10" max="250" step="1" value="40"></label>
-            <label class="control compact"><span class="control-label"><span>Viscosity</span><output id="viscosity-value">5.5</output></span><input id="viscosity" type="range" min="1" max="20" step="0.1" value="5.5"></label>
-            <label class="control compact"><span class="control-label"><span>Simulation steps</span><output id="steps-value">0</output></span><input id="steps" type="range" min="0" max="6" step="1" value="0"></label>
-            <label class="control compact"><span class="control-label"><span>Pointer radius</span><output id="pointer-radius-value">1.10</output></span><input id="pointer-radius" type="range" min="0.1" max="5" step="0.05" value="1.1"></label>
-            <label class="control compact"><span class="control-label"><span>Pointer strength</span><output id="pointer-strength-value">15</output></span><input id="pointer-strength" type="range" min="1" max="35" step="1" value="15"></label>
-          </div>
-        </section>
-
-        <section class="control-section" data-section>
-          <button class="section-title" type="button" data-section-toggle>
-            <span>Camera</span><span class="section-chevron">⌄</span>
-          </button>
-          <div class="section-body">
-            <label class="control compact"><span class="control-label"><span>Rotate Y-axis</span><output id="yaw-value">0.0°</output></span><input id="yaw" type="range" min="-180" max="180" step="0.5" value="0"></label>
-            <label class="control compact"><span class="control-label"><span>Elevation</span><output id="elevation-value">26.6°</output></span><input id="elevation" type="range" min="8" max="72" step="0.5" value="26.565"></label>
-            <label class="control compact"><span class="control-label"><span>Distance</span><output id="distance-value">1.12</output></span><input id="distance" type="range" min="0.72" max="2.4" step="0.01" value="1.118034"></label>
-            <label class="toggle-control"><input id="auto-rotate" type="checkbox"><span class="toggle"></span><span>Auto rotate</span></label>
-            <label class="control compact"><span class="control-label"><span>Rotate speed</span><output id="rotate-speed-value">8°/s</output></span><input id="rotate-speed" type="range" min="1" max="30" step="0.5" value="8"></label>
-            <button id="reset-camera" class="button wide" type="button">Center Visualization</button>
-          </div>
-        </section>
-
-        <section class="control-section" data-section>
-          <button class="section-title" type="button" data-section-toggle>
-            <span>Appearance</span><span class="section-chevron">⌄</span>
-          </button>
-          <div class="section-body">
-            <label class="control color-control"><span class="control-label">Background</span><input id="background-color" type="color" value="#0d0d0d"></label>
-            <label class="control compact"><span class="control-label"><span>Material brightness</span><output id="brightness-value">1.00×</output></span><input id="brightness" type="range" min="0.25" max="2" step="0.05" value="1"></label>
-            <label class="control compact"><span class="control-label"><span>Iridescence</span><output id="iridescence-value">1.00×</output></span><input id="iridescence" type="range" min="0" max="3" step="0.05" value="1"></label>
-          </div>
-        </section>
-
-        <section class="control-section open" data-section>
-          <button class="section-title" type="button" data-section-toggle>
-            <span>Export</span><span class="section-chevron">⌄</span>
-          </button>
-          <div class="section-body">
-            <label class="control text-control"><span class="control-label">Filename</span><input id="export-filename" type="text" value="ferrofluid-visualizer" spellcheck="false"></label>
-            <div class="two-col">
-              <label class="control select-control"><span class="control-label">Format</span><select id="export-format"><option value="webm">WebM</option><option value="mp4">MP4</option></select></label>
-              <label class="control select-control"><span class="control-label">FPS</span><select id="export-fps"><option value="30">30</option><option value="60" selected>60</option></select></label>
+        <section class="section" data-section="ferrofluid">
+          <div class="collapsible-header">
+            <h2 tabindex="0">Ferrofluid</h2>
+            <div class="collapsible-header-actions">
+              <button class="section-reset" data-reset-section="ferrofluid" title="Reset Ferrofluid" type="button">↺</button>
+              <button class="collapse-toggle" aria-expanded="true" title="Collapse Ferrofluid" type="button">−</button>
             </div>
-            <label class="control select-control"><span class="control-label">Resolution</span><select id="export-resolution"><option value="current">Current viewport</option><option value="1920x1080" selected>1920 × 1080</option><option value="1080x1920">1080 × 1920</option><option value="2560x1440">2560 × 1440</option><option value="3840x2160">3840 × 2160</option></select></label>
-            <div class="two-col">
-              <label class="control select-control"><span class="control-label">Bitrate</span><select id="export-bitrate"><option value="8000000">8 Mbps</option><option value="16000000" selected>16 Mbps</option><option value="24000000">24 Mbps</option><option value="40000000">40 Mbps</option></select></label>
-              <label class="control select-control"><span class="control-label">Range</span><select id="export-range"><option value="full">Full track</option><option value="current">Current → end</option></select></label>
+          </div>
+          <div class="collapsible-content">
+            <div class="control"><label for="base-zoom">Base Shape</label><div class="value-editor"><input class="value-input" id="base-zoom-value" type="number" min="0.15" max="0.85" step="0.01" value="0.50"></div><input id="base-zoom" type="range" min="0.15" max="0.85" step="0.01" value="0.50"></div>
+            <div class="control"><label for="spike-height">Spike Height</label><div class="value-editor"><input class="value-input" id="spike-height-value" type="number" min="0" max="3" step="0.05" value="1.35"><span class="value-suffix">×</span></div><input id="spike-height" type="range" min="0" max="3" step="0.05" value="1.35"></div>
+            <div class="control"><label for="spike-sharpness">Spike Sharpness</label><div class="value-editor"><input class="value-input" id="spike-sharpness-value" type="number" min="0" max="2" step="0.05" value="0.45"><span class="value-suffix">×</span></div><input id="spike-sharpness" type="range" min="0" max="2" step="0.05" value="0.45"></div>
+            <div class="control"><label for="agitation">Fluid Agitation</label><div class="value-editor"><input class="value-input" id="agitation-value" type="number" min="0" max="2" step="0.05" value="0.65"><span class="value-suffix">×</span></div><input id="agitation" type="range" min="0" max="2" step="0.05" value="0.65"></div>
+            <div class="control"><label for="camera-pulse">Camera Pulse</label><div class="value-editor"><input class="value-input" id="camera-pulse-value" type="number" min="0" max="1.5" step="0.05" value="0"><span class="value-suffix">×</span></div><input id="camera-pulse" type="range" min="0" max="1.5" step="0.05" value="0"></div>
+          </div>
+        </section>
+
+        <section class="section is-collapsed" data-section="simulation">
+          <div class="collapsible-header">
+            <h2 tabindex="0">Simulation</h2>
+            <div class="collapsible-header-actions">
+              <button class="section-reset" data-reset-section="simulation" title="Reset Simulation" type="button">↺</button>
+              <button class="collapse-toggle" aria-expanded="false" title="Expand Simulation" type="button">+</button>
             </div>
-            <button id="export-video" class="button primary wide" type="button">Export Video</button>
-            <div class="button-row two">
-              <button id="export-png" class="button" type="button">Export PNG</button>
-              <button id="export-json" class="button" type="button">Export JSON</button>
+          </div>
+          <div class="collapsible-content">
+            <div class="control"><label for="mass">Mass</label><div class="value-editor"><input class="value-input" id="mass-value" type="number" min="0.1" max="5" step="0.05" value="1"></div><input id="mass" type="range" min="0.1" max="5" step="0.05" value="1"></div>
+            <div class="control"><label for="density">Rest Density</label><div class="value-editor"><input class="value-input" id="density-value" type="number" min="0.2" max="5" step="0.05" value="1.8"></div><input id="density" type="range" min="0.2" max="5" step="0.05" value="1.8"></div>
+            <div class="control"><label for="gas">Gas Constant</label><div class="value-editor"><input class="value-input" id="gas-value" type="number" min="10" max="250" step="1" value="40"></div><input id="gas" type="range" min="10" max="250" step="1" value="40"></div>
+            <div class="control"><label for="viscosity">Viscosity</label><div class="value-editor"><input class="value-input" id="viscosity-value" type="number" min="1" max="20" step="0.1" value="5.5"></div><input id="viscosity" type="range" min="1" max="20" step="0.1" value="5.5"></div>
+            <div class="control"><label for="steps">Simulation Steps</label><div class="value-editor"><input class="value-input" id="steps-value" type="number" min="0" max="6" step="1" value="0"></div><input id="steps" type="range" min="0" max="6" step="1" value="0"></div>
+            <div class="control"><label for="pointer-radius">Pointer Radius</label><div class="value-editor"><input class="value-input" id="pointer-radius-value" type="number" min="0.1" max="5" step="0.05" value="1.1"></div><input id="pointer-radius" type="range" min="0.1" max="5" step="0.05" value="1.1"></div>
+            <div class="control"><label for="pointer-strength">Pointer Strength</label><div class="value-editor"><input class="value-input" id="pointer-strength-value" type="number" min="1" max="35" step="1" value="15"></div><input id="pointer-strength" type="range" min="1" max="35" step="1" value="15"></div>
+          </div>
+        </section>
+
+        <section class="section is-collapsed" data-section="camera">
+          <div class="collapsible-header">
+            <h2 tabindex="0">Camera</h2>
+            <div class="collapsible-header-actions">
+              <button class="section-reset" data-reset-section="camera" title="Reset Camera" type="button">↺</button>
+              <button class="collapse-toggle" aria-expanded="false" title="Expand Camera" type="button">+</button>
+            </div>
+          </div>
+          <div class="collapsible-content">
+            <div class="control"><label for="yaw">Rotate Y-axis</label><div class="value-editor"><input class="value-input" id="yaw-value" type="number" min="-180" max="180" step="0.5" value="0"><span class="value-suffix">°</span></div><input id="yaw" type="range" min="-180" max="180" step="0.5" value="0"></div>
+            <div class="control"><label for="elevation">Elevation</label><div class="value-editor"><input class="value-input" id="elevation-value" type="number" min="8" max="72" step="0.5" value="26.565"><span class="value-suffix">°</span></div><input id="elevation" type="range" min="8" max="72" step="0.5" value="26.565"></div>
+            <div class="control"><label for="distance">Distance</label><div class="value-editor"><input class="value-input" id="distance-value" type="number" min="0.72" max="2.4" step="0.01" value="1.118034"></div><input id="distance" type="range" min="0.72" max="2.4" step="0.01" value="1.118034"></div>
+            <div class="control toggle-control"><label for="auto-rotate">Auto Rotate</label><label class="switch" for="auto-rotate"><input class="switch-input" id="auto-rotate" type="checkbox" role="switch"><span class="switch-track"></span></label></div>
+            <div class="control"><label for="rotate-speed">Rotate Speed</label><div class="value-editor"><input class="value-input" id="rotate-speed-value" type="number" min="-30" max="30" step="0.5" value="6"><span class="value-suffix">°/s</span></div><input id="rotate-speed" type="range" min="-30" max="30" step="0.5" value="6"></div>
+            <button id="reset-camera" class="secondary" type="button">Center Visualization</button>
+          </div>
+        </section>
+
+        <section class="section is-collapsed" data-section="appearance">
+          <div class="collapsible-header">
+            <h2 tabindex="0">Appearance</h2>
+            <div class="collapsible-header-actions">
+              <button class="section-reset" data-reset-section="appearance" title="Reset Appearance" type="button">↺</button>
+              <button class="collapse-toggle" aria-expanded="false" title="Expand Appearance" type="button">+</button>
+            </div>
+          </div>
+          <div class="collapsible-content">
+            <div class="control color-control"><label for="background-color">Background</label><input id="background-color" type="color" value="#050505"></div>
+            <div class="control"><label for="brightness">Material Brightness</label><div class="value-editor"><input class="value-input" id="brightness-value" type="number" min="0.35" max="2" step="0.05" value="1"><span class="value-suffix">×</span></div><input id="brightness" type="range" min="0.35" max="2" step="0.05" value="1"></div>
+            <div class="control"><label for="iridescence">Iridescence</label><div class="value-editor"><input class="value-input" id="iridescence-value" type="number" min="0" max="2" step="0.05" value="1"><span class="value-suffix">×</span></div><input id="iridescence" type="range" min="0" max="2" step="0.05" value="1"></div>
+          </div>
+        </section>
+
+        <section class="section" data-section="export">
+          <div class="collapsible-header">
+            <h2 tabindex="0">Export</h2>
+            <div class="collapsible-header-actions">
+              <button class="section-reset" data-reset-section="export" title="Reset Export" type="button">↺</button>
+              <button class="collapse-toggle" aria-expanded="true" title="Collapse Export" type="button">−</button>
+            </div>
+          </div>
+          <div class="collapsible-content">
+            <div class="control text-control"><label for="export-filename">Filename</label><input id="export-filename" class="text-input" type="text" value="ferrofluid-visualizer" spellcheck="false"></div>
+            <div class="control select-control"><label for="export-format">Format</label><select id="export-format"><option value="webm">WebM</option><option value="mp4">MP4</option></select></div>
+            <div class="control select-control"><label for="export-fps">FPS</label><select id="export-fps"><option value="30">30</option><option value="60" selected>60</option></select></div>
+            <div class="control select-control"><label for="export-resolution">Resolution</label><select id="export-resolution"><option value="current">Current viewport</option><option value="1920x1080" selected>1920 × 1080</option><option value="1080x1920">1080 × 1920</option><option value="2560x1440">2560 × 1440</option><option value="3840x2160">3840 × 2160</option></select></div>
+            <div class="control select-control"><label for="export-bitrate">Bitrate</label><select id="export-bitrate"><option value="8000000">8 Mbps</option><option value="16000000" selected>16 Mbps</option><option value="24000000">24 Mbps</option><option value="40000000">40 Mbps</option></select></div>
+            <div class="control select-control"><label for="export-range">Range</label><select id="export-range"><option value="full">Full track / active loop</option><option value="current">Current → end</option></select></div>
+            <button id="export-video" class="video-export-button" type="button">Export Video</button>
+            <div class="button-row">
+              <button id="export-png" class="secondary" type="button">Export PNG</button>
+              <button id="export-json" class="secondary" type="button">Export JSON</button>
             </div>
             <div id="export-progress" class="export-progress" hidden>
-              <div class="progress-track"><span id="export-progress-bar"></span></div>
+              <progress id="export-progress-bar" max="100" value="0"></progress>
               <div class="progress-meta"><span id="export-stage">Preparing</span><span id="export-percent">0%</span></div>
-              <button id="cancel-export" class="button danger wide" type="button">Cancel Export</button>
+              <button id="cancel-export" class="danger" type="button">Cancel Export</button>
             </div>
           </div>
         </section>
-
-        <footer class="sidebar-footer">
-          <span class="aigox-mark">AIGOX</span>
-          <span>VISUAL SYSTEM</span>
-        </footer>
       </div>
-    </aside>
+    </div>
 
-    <main id="viewport">
-      <canvas id="visualizer-canvas"></canvas>
-      <button id="sidebar-toggle" class="sidebar-toggle" type="button" title="Toggle sidebar" aria-label="Toggle sidebar">‹</button>
-      <div class="viewport-brand">FERROFLUID <span>/ AUDIO REACTIVE</span></div>
-      <div class="interaction-hint">LMB disturb · RMB/Shift drag orbit · wheel zoom</div>
-      <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    </main>
+    <div class="viewport-brand">FERROFLUID <span>/ AUDIO REACTIVE</span></div>
+    <div class="interaction-hint">LEFT DRAG · DISTURB FLUID &nbsp;&nbsp; RIGHT / SHIFT DRAG · ORBIT &nbsp;&nbsp; WHEEL · ZOOM</div>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
   </div>
 </body>
 </html>

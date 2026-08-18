@@ -19,6 +19,7 @@ export class AudioControl {
         this.isInitialized = false;
         this.isFileLoaded = false;
         this.fileName = '';
+        this.decodedAudioBuffer = null;
         this.sensitivity = 1.35;
         this.smoothing = 0.72;
         this.threshold = 0.025;
@@ -115,9 +116,10 @@ export class AudioControl {
         this.audioElement.load();
         this.fileName = file.name;
         this.isFileLoaded = true;
+        this.decodedAudioBuffer = null;
         this.#useAnalysisSource(this.mediaElementSource, 'file');
 
-        await new Promise((resolve, reject) => {
+        const metadataReady = new Promise((resolve, reject) => {
             const onReady = () => {
                 cleanup();
                 resolve();
@@ -133,6 +135,13 @@ export class AudioControl {
             this.audioElement.addEventListener('loadedmetadata', onReady, { once: true });
             this.audioElement.addEventListener('error', onError, { once: true });
         });
+
+        const decodeReady = file.arrayBuffer().then((arrayBuffer) =>
+            this.audioContext.decodeAudioData(arrayBuffer.slice(0))
+        );
+
+        const [, decoded] = await Promise.all([metadataReady, decodeReady]);
+        this.decodedAudioBuffer = decoded;
     }
 
     async init() {
