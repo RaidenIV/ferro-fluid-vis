@@ -131,6 +131,7 @@ export class Sketch {
     };
     qualityOrder = ['low', 'medium', 'high', 'ultra'];
     effectiveQuality = 'ultra';
+    visibleMeshQuality = 'ultra';
     effectiveRenderScale = 1;
     autoQualityIndex = 3;
     autoRenderScale = 1;
@@ -314,7 +315,8 @@ export class Sketch {
         this.quadBufferInfo = twgl.createBufferInfoFromArrays(gl, { a_position: { numComponents: 2, data: [-1, -1, 3, -1, -1, 3] }});
         this.quadVAO = twgl.createVAOAndSetAttributes(gl, this.pressurePrg.attribSetters, this.quadBufferInfo.attribs, this.quadBufferInfo.indices);
         this.postprocessVAO = twgl.createVAOAndSetAttributes(gl, this.postprocessPrg.attribSetters, this.quadBufferInfo.attribs, this.quadBufferInfo.indices);
-        this.#rebuildSpikesMesh(this.qualityProfiles[this.effectiveQuality]?.meshResolution || this.planeResolution);
+        this.#rebuildSpikesMesh(this.qualityProfiles[this.performanceSettings.simulationQuality]?.meshResolution || this.planeResolution);
+        this.visibleMeshQuality = this.performanceSettings.simulationQuality;
         this.spikesWorldMatrix = mat4.create();
         this.groundBufferInfo = twgl.primitives.createDiscBufferInfo(gl, 1.3, 8);
         this.groundVAO = twgl.createVAOAndSetAttributes(gl, this.groundPrg.attribSetters, this.groundBufferInfo.attribs, this.groundBufferInfo.indices);
@@ -695,9 +697,12 @@ export class Sketch {
             this.spikesBufferInfo.indices
         );
         this.planeResolution = nextResolution;
-        this.spikesIndexType = ((nextResolution + 1) * (nextResolution + 1) > 65535)
+        // Trust TWGL's actual element-buffer type. This prevents a drawElements
+        // type mismatch if a browser/TWGL build chooses a different index array
+        // representation at the 16-bit boundary.
+        this.spikesIndexType = this.spikesBufferInfo.elementType || (((nextResolution + 1) * (nextResolution + 1) > 65535)
             ? this.gl.UNSIGNED_INT
-            : this.gl.UNSIGNED_SHORT;
+            : this.gl.UNSIGNED_SHORT);
     }
 
     #rebuildHeightMap(quality) {
@@ -742,9 +747,11 @@ export class Sketch {
         this.performanceStats.effectiveQuality = normalizedQuality;
         this.performanceStats.effectiveRenderScale = normalizedScale;
         if (qualityChanged) {
+            // Auto tuning may change the internal height-field resolution, but it
+            // must not churn the visible surface VAO/index buffers every time FPS
+            // crosses a threshold. Rebuilding the large 256x256 mesh during an
+            // active render loop caused the surface to disappear on some GPUs.
             this.#rebuildHeightMap(normalizedQuality);
-            const meshResolution = this.qualityProfiles[normalizedQuality]?.meshResolution || 256;
-            this.#rebuildSpikesMesh(meshResolution);
         }
         if (scaleChanged && !this.drawingBufferOverride) this.resize();
     }
@@ -1306,6 +1313,16 @@ export class Sketch {
 
         const ceiling = Math.max(0, this.qualityOrder.indexOf(this.performanceSettings.simulationQuality));
         const qualityWasExplicitlySet = Object.prototype.hasOwnProperty.call(partial, 'simulationQuality');
+
+        // The user-selected Simulation Quality controls visible mesh tessellation.
+        // Auto mode is free to lower only the hidden height-field workload; it
+        // never rebuilds the visible mesh behind the user's back. This preserves
+        // Ultra's smooth 256x256 spike geometry without runtime VAO churn.
+        if (qualityWasExplicitlySet && this.visibleMeshQuality !== this.performanceSettings.simulationQuality) {
+            const meshResolution = this.qualityProfiles[this.performanceSettings.simulationQuality]?.meshResolution || 256;
+            this.#rebuildSpikesMesh(meshResolution);
+            this.visibleMeshQuality = this.performanceSettings.simulationQuality;
+        }
         const modeWasExplicitlySet = Object.prototype.hasOwnProperty.call(partial, 'mode');
         const scaleWasExplicitlySet = Object.prototype.hasOwnProperty.call(partial, 'renderScale');
 
