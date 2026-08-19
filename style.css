@@ -604,3 +604,60 @@ body.presentation-mode #canvas-frame {
 }
 body.presentation-mode { cursor:none; }
 body.presentation-mode #hud-canvas { cursor:none; }
+
+
+/* Parameter lock icon assets and select alignment ------------------------ */
+.parameter-lock-icon {
+  display: block;
+  width: 14px;
+  height: 14px;
+  object-fit: contain;
+  pointer-events: none;
+}
+.parameter-lock.is-locked .parameter-lock-icon {
+  opacity: 1;
+}
+.parameter-lock:not(.is-locked) .parameter-lock-icon {
+  opacity: .72;
+}
+
+/* Keep lock buttons horizontally aligned with dropdowns in Audio Reactivity. */
+.section[data-section="audio"] .control.has-parameter-lock.select-control {
+  grid-template-columns: minmax(0, 1fr) 28px !important;
+  grid-template-areas: "label label" "input lock" !important;
+  align-items: center;
+}
+.section[data-section="audio"] .control.has-parameter-lock.select-control > label {
+  grid-area: label !important;
+}
+.section[data-section="audio"] .control.has-parameter-lock.select-control > select {
+  grid-area: input !important;
+  width: 100%;
+  min-width: 0;
+}
+.section[data-section="audio"] .control.has-parameter-lock.select-control > .parameter-lock {
+  grid-area: lock !important;
+  justify-self: end;
+  align-self: center;
+}
+
+/* The Viewport selector uses the same full-width dropdown geometry and keeps
+   its lock beside the select instead of allowing the enhancement grid to
+   collapse the native control. */
+.viewport-control.has-parameter-lock.select-control {
+  grid-template-columns: minmax(0, 1fr) 28px !important;
+  grid-template-areas: "label label" "input lock" "hint hint" !important;
+  align-items: center;
+}
+.viewport-control.has-parameter-lock.select-control > label { grid-area: label !important; }
+.viewport-control.has-parameter-lock.select-control > select {
+  grid-area: input !important;
+  width: 100%;
+  min-width: 0;
+}
+.viewport-control.has-parameter-lock.select-control > .parameter-lock {
+  grid-area: lock !important;
+  justify-self: end;
+  align-self: center;
+}
+.viewport-control.has-parameter-lock.select-control > .control-hint { grid-area: hint !important; }

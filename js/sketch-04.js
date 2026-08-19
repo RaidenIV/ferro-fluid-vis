@@ -121,10 +121,13 @@ export class Sketch {
         showStats: false,
     };
     qualityProfiles = {
-        low: { surfaceScale: 0.50 },
-        medium: { surfaceScale: 0.65 },
-        high: { surfaceScale: 0.80 },
-        ultra: { surfaceScale: 1.00 },
+        // Surface-field and visible mesh resolution are coupled per preset so
+        // selecting a higher Simulation Quality actually increases the detail
+        // of the rendered ferrofluid rather than only the hidden height map.
+        low: { surfaceResolution: 128, meshResolution: 128 },
+        medium: { surfaceResolution: 160, meshResolution: 160 },
+        high: { surfaceResolution: 208, meshResolution: 208 },
+        ultra: { surfaceResolution: 256, meshResolution: 256 },
     };
     qualityOrder = ['low', 'medium', 'high', 'ultra'];
     effectiveQuality = 'ultra';
@@ -135,8 +138,10 @@ export class Sketch {
     lastProcessedFrameTime = 0;
     drawingBufferOverride = false;
 
-    // resolution of the spikes plane (side segments)
-    planeResolution = 128;
+    // Visible ferrofluid surface tessellation. Ultra starts at 256 segments
+    // so sharp spike tips are not limited by the old fixed 128-segment mesh.
+    planeResolution = 256;
+    spikesIndexType = null;
 
     // entry animation properties
     entryDelay = 120; // frames
@@ -309,9 +314,7 @@ export class Sketch {
         this.quadBufferInfo = twgl.createBufferInfoFromArrays(gl, { a_position: { numComponents: 2, data: [-1, -1, 3, -1, -1, 3] }});
         this.quadVAO = twgl.createVAOAndSetAttributes(gl, this.pressurePrg.attribSetters, this.quadBufferInfo.attribs, this.quadBufferInfo.indices);
         this.postprocessVAO = twgl.createVAOAndSetAttributes(gl, this.postprocessPrg.attribSetters, this.quadBufferInfo.attribs, this.quadBufferInfo.indices);
-        const spikesArrays = twgl.primitives.createPlaneVertices(1, 1, this.planeResolution, this.planeResolution);
-        this.spikesBufferInfo = twgl.createBufferInfoFromArrays(gl, spikesArrays);
-        this.spikesVAO = twgl.createVAOAndSetAttributes(gl, this.spikesPrg.attribSetters, this.spikesBufferInfo.attribs, this.spikesBufferInfo.indices);
+        this.#rebuildSpikesMesh(this.qualityProfiles[this.effectiveQuality]?.meshResolution || this.planeResolution);
         this.spikesWorldMatrix = mat4.create();
         this.groundBufferInfo = twgl.primitives.createDiscBufferInfo(gl, 1.3, 8);
         this.groundVAO = twgl.createVAOAndSetAttributes(gl, this.groundPrg.attribSetters, this.groundBufferInfo.attribs, this.groundBufferInfo.indices);
@@ -664,8 +667,37 @@ export class Sketch {
 
     #getHeightMapSize(quality = this.effectiveQuality) {
         const profile = this.qualityProfiles[quality] || this.qualityProfiles.ultra;
-        const base = this.baseHeightMapSize || this.planeResolution * 2;
-        return Math.max(64, Math.round((base * profile.surfaceScale) / 16) * 16);
+        return Math.max(64, Math.round((profile.surfaceResolution || 256) / 16) * 16);
+    }
+
+    #disposeBufferInfo(bufferInfo) {
+        if (!this.gl || !bufferInfo) return;
+        const gl = this.gl;
+        const buffers = new Set();
+        Object.values(bufferInfo.attribs || {}).forEach((attrib) => {
+            if (attrib?.buffer) buffers.add(attrib.buffer);
+        });
+        if (bufferInfo.indices) buffers.add(bufferInfo.indices);
+        buffers.forEach((buffer) => gl.deleteBuffer(buffer));
+    }
+
+    #rebuildSpikesMesh(resolution) {
+        if (!this.gl || !this.spikesPrg) return;
+        const nextResolution = Math.max(32, Math.round(Number(resolution) || 128));
+        if (this.spikesVAO) this.gl.deleteVertexArray(this.spikesVAO);
+        if (this.spikesBufferInfo) this.#disposeBufferInfo(this.spikesBufferInfo);
+        const arrays = twgl.primitives.createPlaneVertices(1, 1, nextResolution, nextResolution);
+        this.spikesBufferInfo = twgl.createBufferInfoFromArrays(this.gl, arrays);
+        this.spikesVAO = twgl.createVAOAndSetAttributes(
+            this.gl,
+            this.spikesPrg.attribSetters,
+            this.spikesBufferInfo.attribs,
+            this.spikesBufferInfo.indices
+        );
+        this.planeResolution = nextResolution;
+        this.spikesIndexType = ((nextResolution + 1) * (nextResolution + 1) > 65535)
+            ? this.gl.UNSIGNED_INT
+            : this.gl.UNSIGNED_SHORT;
     }
 
     #rebuildHeightMap(quality) {
@@ -709,7 +741,11 @@ export class Sketch {
         this.effectiveRenderScale = normalizedScale;
         this.performanceStats.effectiveQuality = normalizedQuality;
         this.performanceStats.effectiveRenderScale = normalizedScale;
-        if (qualityChanged) this.#rebuildHeightMap(normalizedQuality);
+        if (qualityChanged) {
+            this.#rebuildHeightMap(normalizedQuality);
+            const meshResolution = this.qualityProfiles[normalizedQuality]?.meshResolution || 256;
+            this.#rebuildSpikesMesh(meshResolution);
+        }
         if (scaleChanged && !this.drawingBufferOverride) this.resize();
     }
 
@@ -1073,7 +1109,12 @@ export class Sketch {
         this.#applyMaterialUniforms(this.spikesUniforms);
         twgl.setUniforms(this.spikesPrg, this.spikesUniforms);
         gl.bindVertexArray(this.spikesVAO);
-        gl.drawElements(gl.TRIANGLES, this.spikesBufferInfo.numElements, gl.UNSIGNED_SHORT, 0);
+        gl.drawElements(
+            gl.TRIANGLES,
+            this.spikesBufferInfo.numElements,
+            this.spikesIndexType || gl.UNSIGNED_SHORT,
+            0
+        );
     }
 
     #render() {

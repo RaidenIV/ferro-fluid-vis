@@ -519,10 +519,18 @@ function initializeParameterLocks() {
         button.dataset.lockId = id;
         button.title = `Lock ${control.querySelector('label')?.textContent?.trim() || id}`;
         button.setAttribute('aria-label', button.title);
+        const icon = document.createElement('img');
+        icon.className = 'parameter-lock-icon';
+        icon.alt = '';
+        icon.setAttribute('aria-hidden', 'true');
+        button.appendChild(icon);
         const update = () => {
             const locked = lockedParameters.has(id);
+            const label = control.querySelector('label')?.textContent?.trim() || id;
             button.classList.toggle('is-locked', locked);
-            button.textContent = locked ? '🔒' : '🔓';
+            icon.src = locked ? './assets/locked.svg' : './assets/open.svg';
+            button.title = `${locked ? 'Unlock' : 'Lock'} ${label}`;
+            button.setAttribute('aria-label', button.title);
             button.setAttribute('aria-pressed', String(locked));
         };
         button.addEventListener('click', (event) => {
